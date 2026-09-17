@@ -10,6 +10,7 @@ exports.updateShutdownDelay = updateShutdownDelay;
 exports.decideChargeManager = decideChargeManager;
 exports.decideChargeManagerFleet = decideChargeManagerFleet;
 exports.decidePhaseSwitch = decidePhaseSwitch;
+exports.phaseModeToSend = phaseModeToSend;
 exports.decideIdleRelease = decideIdleRelease;
 exports.buildChargerCommands = buildChargerCommands;
 exports.limitTotalCurrent = limitTotalCurrent;
@@ -218,6 +219,12 @@ function decidePhaseSwitch(input) {
         return { targetPhases, switchDelay: 0 };
     }
     return { targetPhases: input.currentPhases, switchDelay };
+}
+function phaseModeToSend(charge3Phase, enabledPhases) {
+    if (enabledPhases === (charge3Phase ? 3 : 1)) {
+        return null;
+    }
+    return charge3Phase ? 2 : 1;
 }
 exports.IDLE_RELEASE_DELAY_MS = 5 * 60 * 1000;
 exports.IDLE_CHARGE_POWER = 100;

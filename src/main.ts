@@ -18,6 +18,7 @@ import {
 	MIN_CHARGE_CURRENT,
 	resolveWallboxCurrentLimits,
 	IDLE_RELEASE_DELAY_MS,
+	phaseModeToSend,
 	START_CHARGE_CURRENT,
 	type TotalCurrentAllocation,
 	type TotalCurrentParticipant,
@@ -1317,7 +1318,11 @@ class go_e_charger extends utils.Adapter {
 			this.log.debug(`Charger ${iWB} is in read-only mode - skipping phase switching`);
 			return;
 		}
-		const psm = Charge3Phase ? 2 : 1;
+		// psm is a stored charger setting - only write it when the charger reports a different mode
+		const psm = phaseModeToSend(Charge3Phase, this.wallboxInfoList[iWB].EnabledPhases);
+		if (psm === null) {
+			return;
+		}
 		await axiosInstance
 			.get(`http://${this.config.wallBoxList[iWB].ipAddress}/api/set?psm=${psm}`, { transformResponse: r => r })
 			.then(response => {
