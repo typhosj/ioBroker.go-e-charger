@@ -230,6 +230,7 @@ If you enjoyed this project – or are just feeling generous – consider buying
 - (hombach) added an installation-wide total current budget (maximum total charging current) that caps the summed current of all wallboxes to protect a shared fuse, serving ChargeNOW before ChargeManager and keeping a wallbox without a connected vehicle off so idle wallboxes neither trip the fuse nor starve one that is already charging
 - (hombach) added concise debug logging for the ChargeManager control loops (surplus sharing, phase switching, total current budget)
 - (hombach) docs: documented the total current budget
+- (typhosj) ChargeManager: new per-wallbox option to withdraw the charge release when the vehicle draws no power for 5 minutes - vehicles such as the Renault Zoe otherwise stay in charging mode, e.g. in the evening when the battery bonus keeps the release active (reported by a user)
 
 ### 1.7.0 (2026-09-18)
 

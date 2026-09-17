@@ -99,6 +99,14 @@ export interface IWallboxInfo {
 	 */
 	PhaseSwitchDelay: number;
 	/**
+	 * Consecutive cycles the connected vehicle ignored an active charge release
+	 */
+	IdleReleaseDelay: number;
+	/**
+	 * Charge release was withdrawn because the vehicle stopped charging; blocks re-enabling
+	 */
+	IdleReleaseLatched: boolean;
+	/**
 	 * CurrentHysteresis
 	 */
 	CurrentHysteresis: number;

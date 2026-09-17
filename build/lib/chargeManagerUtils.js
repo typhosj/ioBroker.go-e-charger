@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
+exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
 exports.resolveWallboxCurrentLimits = resolveWallboxCurrentLimits;
 exports.evaluateBatteryAvailability = evaluateBatteryAvailability;
 exports.calculateAvailableSurplusPower = calculateAvailableSurplusPower;
@@ -10,6 +10,7 @@ exports.updateShutdownDelay = updateShutdownDelay;
 exports.decideChargeManager = decideChargeManager;
 exports.decideChargeManagerFleet = decideChargeManagerFleet;
 exports.decidePhaseSwitch = decidePhaseSwitch;
+exports.decideIdleRelease = decideIdleRelease;
 exports.buildChargerCommands = buildChargerCommands;
 exports.limitTotalCurrent = limitTotalCurrent;
 exports.MIN_CHARGE_CURRENT = 6;
@@ -217,6 +218,28 @@ function decidePhaseSwitch(input) {
         return { targetPhases, switchDelay: 0 };
     }
     return { targetPhases: input.currentPhases, switchDelay };
+}
+exports.IDLE_RELEASE_DELAY_MS = 5 * 60 * 1000;
+exports.IDLE_CHARGE_POWER = 100;
+function decideIdleRelease(input) {
+    if (input.carState === 1 || input.controllerAction === "disable") {
+        return { withdraw: false, nextState: { idleDelay: 0, latched: false } };
+    }
+    if (input.state.latched) {
+        return { withdraw: false, nextState: { idleDelay: 0, latched: true } };
+    }
+    const idle = input.releaseActive &&
+        (input.carState === 2 || input.carState === 3 || input.carState === 4) &&
+        Number.isFinite(input.chargePower) &&
+        input.chargePower < exports.IDLE_CHARGE_POWER;
+    if (!idle) {
+        return { withdraw: false, nextState: { idleDelay: 0, latched: false } };
+    }
+    const idleDelay = (Number.isFinite(input.state.idleDelay) ? Math.max(0, Math.trunc(input.state.idleDelay)) : 0) + 1;
+    if (idleDelay >= Math.max(1, input.delayCycles)) {
+        return { withdraw: true, nextState: { idleDelay: 0, latched: true } };
+    }
+    return { withdraw: false, nextState: { idleDelay, latched: false } };
 }
 function buildChargerCommands(allow, ampere, firmware) {
     if (!allow) {
