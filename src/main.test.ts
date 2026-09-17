@@ -15,8 +15,11 @@ import {
 	MAX_CHARGE_CURRENT,
 	MIN_CHARGE_CURRENT,
 	type TotalCurrentParticipant,
+	PHASE_MODE_AUTO,
 	PHASE_SWITCH_DELAY_CYCLES,
+	phaseModeOf,
 	phaseModeToSend,
+	resolvePhaseModeWrite,
 	PHASE_VOLTAGE,
 	resolveWallboxCurrentLimits,
 	SHUTDOWN_DELAY_CYCLES,
@@ -888,6 +891,37 @@ describe("ChargeManager safety helpers", () => {
 				assert.equal(phaseModeToSend(false, enabledPhases), 1);
 				assert.equal(phaseModeToSend(true, enabledPhases), 2);
 			}
+		});
+	});
+
+	describe("resolvePhaseModeWrite", () => {
+		it("fixes one or three phases and ends automatic switching", () => {
+			assert.deepEqual(resolvePhaseModeWrite(1, true), { auto: false, charge3Phase: false });
+			assert.deepEqual(resolvePhaseModeWrite(3, true), { auto: false, charge3Phase: true });
+			assert.deepEqual(resolvePhaseModeWrite(3, false), { auto: false, charge3Phase: true });
+		});
+
+		it("enables automatic switching only when the wallbox allows it", () => {
+			assert.deepEqual(resolvePhaseModeWrite(PHASE_MODE_AUTO, true), { auto: true });
+			assert.equal(resolvePhaseModeWrite(PHASE_MODE_AUTO, false), null);
+		});
+
+		it("rejects every other value", () => {
+			for (const value of [2, -1, 4, 1.5, Number.NaN, "1", "3", true, null, undefined]) {
+				assert.equal(resolvePhaseModeWrite(value, true), null, String(value));
+			}
+		});
+	});
+
+	describe("phaseModeOf", () => {
+		it("reports automatic before the manual phase request", () => {
+			assert.equal(phaseModeOf(true, true), PHASE_MODE_AUTO);
+			assert.equal(phaseModeOf(true, false), PHASE_MODE_AUTO);
+		});
+
+		it("reports the manual phase request otherwise", () => {
+			assert.equal(phaseModeOf(false, true), 3);
+			assert.equal(phaseModeOf(false, false), 1);
 		});
 	});
 

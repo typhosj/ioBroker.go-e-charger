@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
+exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
 exports.resolveWallboxCurrentLimits = resolveWallboxCurrentLimits;
 exports.evaluateBatteryAvailability = evaluateBatteryAvailability;
 exports.calculateAvailableSurplusPower = calculateAvailableSurplusPower;
@@ -11,6 +11,8 @@ exports.decideChargeManager = decideChargeManager;
 exports.decideChargeManagerFleet = decideChargeManagerFleet;
 exports.decidePhaseSwitch = decidePhaseSwitch;
 exports.phaseModeToSend = phaseModeToSend;
+exports.resolvePhaseModeWrite = resolvePhaseModeWrite;
+exports.phaseModeOf = phaseModeOf;
 exports.decideIdleRelease = decideIdleRelease;
 exports.buildChargerCommands = buildChargerCommands;
 exports.limitTotalCurrent = limitTotalCurrent;
@@ -225,6 +227,19 @@ function phaseModeToSend(charge3Phase, enabledPhases) {
         return null;
     }
     return charge3Phase ? 2 : 1;
+}
+exports.PHASE_MODE_AUTO = 0;
+function resolvePhaseModeWrite(value, autoAllowed) {
+    if (value === 1 || value === 3) {
+        return { auto: false, charge3Phase: value === 3 };
+    }
+    if (value === exports.PHASE_MODE_AUTO && autoAllowed) {
+        return { auto: true };
+    }
+    return null;
+}
+function phaseModeOf(auto, charge3Phase) {
+    return auto ? exports.PHASE_MODE_AUTO : charge3Phase ? 3 : 1;
 }
 exports.IDLE_RELEASE_DELAY_MS = 5 * 60 * 1000;
 exports.IDLE_CHARGE_POWER = 100;
