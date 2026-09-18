@@ -139,6 +139,7 @@ class go_e_charger extends utils.Adapter {
                 PhaseSwitchDelay: 0,
                 IdleReleaseDelay: 0,
                 IdleReleaseLatched: false,
+                Reported: {},
                 CurrentHysteresis: 0,
                 SetOptAmp: 5,
                 SetOptAllow: false,
@@ -490,7 +491,10 @@ class go_e_charger extends utils.Adapter {
                 }
                 else if (info.ChargeManager) {
                     const plan = chargePlans[iWB];
-                    if (plan?.decision) {
+                    if ((0, chargeManagerUtils_1.isVehicleDisconnected)(info.CarState)) {
+                        await this.stopChargeManager(`No vehicle connected`, iWB);
+                    }
+                    else if (plan?.decision) {
                         const decision = plan.decision;
                         const useAutoPhase = info.AutoPhase && info.HardwareMin3;
                         const targetPhase = useAutoPhase ? info.ManagedCharge3Phase : info.Charge3Phase;
@@ -622,6 +626,7 @@ class go_e_charger extends utils.Adapter {
             await this.ParseStatusAPIV1(result, iWB);
         })
             .catch(error => {
+            this.wallboxInfoList[iWB].Reported = {};
             if (error.message && error.message.includes("EHOSTUNREACH")) {
                 this.log.error(`Charger unreachable error when calling go-eCharger API: ${error}`);
                 this.wallboxInfoList[iWB].Firmware = `EHostUnreach`;
@@ -656,6 +661,7 @@ class go_e_charger extends utils.Adapter {
         }
         void this.projectUtils.checkAndSetValueNumber(`${basePath}.Power.ChargeCurrent`, Number(status.amp), `Charge current output`, "A", "level.current");
         void this.projectUtils.checkAndSetValueNumber(`${basePath}.Power.ChargeCurrentVolatile`, Number(status.amx), `Charge current output volatile`, "A", "value.current");
+        this.wallboxInfoList[iWB].Reported = { alw: Number(status.alw), amp: Number(status.amp), amx: Number(status.amx) };
         switch (status.alw) {
             case "0":
                 await this.projectUtils.checkAndSetValueBoolean(`${basePath}.Power.ChargingAllowed`, false, `Charging allowed`, "indicator");
@@ -798,7 +804,7 @@ class go_e_charger extends utils.Adapter {
             this.log.warn(`Invalid charging current for charger ${iWB}: ${Ampere} A`);
             return;
         }
-        for (const command of commands) {
+        for (const command of (0, chargeManagerUtils_1.dropUnchangedChargerCommands)(commands, this.wallboxInfoList[iWB].Reported)) {
             try {
                 const response = await axiosInstance.get(`http://${this.config.wallBoxList[iWB].ipAddress}/mqtt?payload=${command.parameter}=${command.value}`, { transformResponse: r => r });
                 this.log.debug(`Sent to charger ${iWB}: ${command.parameter}=${command.value}`);
@@ -883,7 +889,7 @@ class go_e_charger extends utils.Adapter {
             const decision = decisions[index];
             const carState = this.wallboxInfoList[iWB].CarState;
             this.log.debug(`ChargeManager charger ${iWB}: surplus ${Math.round(decision.availablePower)} W → optimal ${decision.optimalCurrent ?? 0} A, ramp ${decision.nextState.currentAmp} A, action=${decision.action} (${decision.reason}), car=${carState}`);
-            if (this.wallboxInfoList[iWB].AutoPhase && this.wallboxInfoList[iWB].HardwareMin3) {
+            if (this.wallboxInfoList[iWB].AutoPhase && this.wallboxInfoList[iWB].HardwareMin3 && !(0, chargeManagerUtils_1.isVehicleDisconnected)(this.wallboxInfoList[iWB].CarState)) {
                 const participant = participants[index];
                 const phaseDecision = (0, chargeManagerUtils_1.decidePhaseSwitch)({
                     currentPhases: this.wallboxInfoList[iWB].EnabledPhases,

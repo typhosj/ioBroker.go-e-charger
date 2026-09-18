@@ -14,6 +14,8 @@ exports.phaseModeToSend = phaseModeToSend;
 exports.resolvePhaseModeWrite = resolvePhaseModeWrite;
 exports.phaseModeOf = phaseModeOf;
 exports.decideIdleRelease = decideIdleRelease;
+exports.isVehicleDisconnected = isVehicleDisconnected;
+exports.dropUnchangedChargerCommands = dropUnchangedChargerCommands;
 exports.buildChargerCommands = buildChargerCommands;
 exports.limitTotalCurrent = limitTotalCurrent;
 exports.MIN_CHARGE_CURRENT = 6;
@@ -262,6 +264,12 @@ function decideIdleRelease(input) {
         return { withdraw: true, nextState: { idleDelay: 0, latched: true } };
     }
     return { withdraw: false, nextState: { idleDelay, latched: false } };
+}
+function isVehicleDisconnected(carState) {
+    return carState === 1;
+}
+function dropUnchangedChargerCommands(commands, reported) {
+    return commands.filter(command => reported[command.parameter] !== command.value);
 }
 function buildChargerCommands(allow, ampere, firmware) {
     if (!allow) {

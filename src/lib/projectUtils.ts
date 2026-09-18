@@ -112,6 +112,10 @@ export interface IWallboxInfo {
 	 */
 	IdleReleaseLatched: boolean;
 	/**
+	 * Charge release and currents the charger reported in the last successful API V1 read
+	 */
+	Reported: Partial<Record<"alw" | "amp" | "amx", number>>;
+	/**
 	 * CurrentHysteresis
 	 */
 	CurrentHysteresis: number;
