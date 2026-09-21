@@ -5,6 +5,7 @@ exports.resolveWallboxCurrentLimits = resolveWallboxCurrentLimits;
 exports.evaluateBatteryAvailability = evaluateBatteryAvailability;
 exports.calculateAvailableSurplusPower = calculateAvailableSurplusPower;
 exports.calculateOptimalChargeCurrent = calculateOptimalChargeCurrent;
+exports.resolveStartChargeCurrent = resolveStartChargeCurrent;
 exports.stepChargeCurrent = stepChargeCurrent;
 exports.updateShutdownDelay = updateShutdownDelay;
 exports.decideChargeManager = decideChargeManager;
@@ -115,6 +116,9 @@ function calculateOptimalChargeCurrent(input) {
     const calculatedCurrent = Math.floor(availablePower / exports.PHASE_VOLTAGE / input.phases);
     return Math.max(0, Math.min(calculatedCurrent, input.maximumChargeCurrent));
 }
+function resolveStartChargeCurrent(minimum, maximum) {
+    return Math.min(Math.max(exports.START_CHARGE_CURRENT, minimum), maximum);
+}
 exports.CURRENT_DEADBAND = 2;
 function stepChargeCurrent(current, target, maximum = exports.MAX_CHARGE_CURRENT, minimum = exports.MIN_CHARGE_CURRENT) {
     const safeMaximum = Number.isInteger(maximum) && maximum >= exports.MIN_CHARGE_CURRENT && maximum <= exports.MAX_CHARGE_CURRENT ? maximum : exports.MAX_CHARGE_CURRENT;
@@ -152,7 +156,7 @@ function decideChargeManager(input) {
         };
     }
     const currentAmp = stepChargeCurrent(input.state.currentAmp, optimalCurrent, input.maximumChargeCurrent, input.minimumChargeCurrent);
-    const startChargeCurrent = Math.min(Math.max(exports.START_CHARGE_CURRENT, input.minimumChargeCurrent), input.maximumChargeCurrent);
+    const startChargeCurrent = resolveStartChargeCurrent(input.minimumChargeCurrent, input.maximumChargeCurrent);
     const isRampingToRaisedMinimum = input.minimumChargeCurrent > exports.START_CHARGE_CURRENT && optimalCurrent >= input.minimumChargeCurrent && currentAmp < input.minimumChargeCurrent;
     let shutdownDelay = isRampingToRaisedMinimum ? 0 : updateShutdownDelay(currentAmp, input.minimumChargeCurrent, input.state.shutdownDelay);
     if (currentAmp >= startChargeCurrent) {

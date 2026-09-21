@@ -104,6 +104,10 @@ export interface IWallboxInfo {
 	 */
 	PhaseSwitchDelay: number;
 	/**
+	 * Last published reason for the current charging decision, so a change can be logged once
+	 */
+	ChargeState: string;
+	/**
 	 * Consecutive cycles the connected vehicle ignored an active charge release
 	 */
 	IdleReleaseDelay: number;

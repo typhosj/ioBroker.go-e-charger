@@ -28,6 +28,7 @@ import {
 	PHASE_VOLTAGE,
 	RELEASE_RETRY_INTERVAL,
 	RELEASE_RETRY_LIMIT,
+	resolveStartChargeCurrent,
 	resolveWallboxCurrentLimits,
 	SHUTDOWN_DELAY_CYCLES,
 	START_CHARGE_CURRENT,
@@ -1026,6 +1027,23 @@ describe("ChargeManager safety helpers", () => {
 		it("reports the manual phase request otherwise", () => {
 			assert.equal(phaseModeOf(false, true), 3);
 			assert.equal(phaseModeOf(false, false), 1);
+		});
+	});
+
+	describe("resolveStartChargeCurrent", () => {
+		it("starts at the fixed start current when the wallbox allows it", () => {
+			assert.equal(resolveStartChargeCurrent(MIN_CHARGE_CURRENT, 16), START_CHARGE_CURRENT);
+			assert.equal(resolveStartChargeCurrent(8, 16), START_CHARGE_CURRENT);
+		});
+
+		it("starts at the raised minimum when that is higher", () => {
+			assert.equal(resolveStartChargeCurrent(12, 16), 12);
+		});
+
+		it("never asks for more than the wallbox maximum", () => {
+			// an 8 A coded cable can never reach the 10 A start current
+			assert.equal(resolveStartChargeCurrent(MIN_CHARGE_CURRENT, 8), 8);
+			assert.equal(resolveStartChargeCurrent(12, 8), 8);
 		});
 	});
 

@@ -292,6 +292,21 @@ export function calculateOptimalChargeCurrent(input: ChargeCalculationInput): nu
 }
 
 /**
+ * The current the ramp has to reach before the charge release is given.
+ *
+ * Charging starts at {@link START_CHARGE_CURRENT} to keep the release from flapping around the
+ * technical minimum, but a wallbox capped below that can never reach it - such a wallbox starts at
+ * its own maximum instead.
+ *
+ * @param minimum Lowest current the ChargeManager may assign to this wallbox
+ * @param maximum Highest current the ChargeManager may assign to this wallbox
+ * @returns The current at which charging is released
+ */
+export function resolveStartChargeCurrent(minimum: number, maximum: number): number {
+	return Math.min(Math.max(START_CHARGE_CURRENT, minimum), maximum);
+}
+
+/**
  * Ampere gap the newly calculated target must have from the current one before the charging
  * current follows it. A one-ampere gap is what a passing cloud produces, and following it makes
  * the charger hunt around the target instead of tracking it.
@@ -379,9 +394,7 @@ export function decideChargeManager(input: ChargeManagerControllerInput): Charge
 	}
 
 	const currentAmp = stepChargeCurrent(input.state.currentAmp, optimalCurrent, input.maximumChargeCurrent, input.minimumChargeCurrent);
-	// charging starts at 10 A to keep the release from flapping around the 6 A minimum, but a
-	// wallbox that is capped below that can never reach 10 A - it starts at its own maximum
-	const startChargeCurrent = Math.min(Math.max(START_CHARGE_CURRENT, input.minimumChargeCurrent), input.maximumChargeCurrent);
+	const startChargeCurrent = resolveStartChargeCurrent(input.minimumChargeCurrent, input.maximumChargeCurrent);
 	// while ramping up to a raised minimum current the target is briefly below the minimum;
 	// do not count that as an insufficient-surplus cycle
 	const isRampingToRaisedMinimum =
