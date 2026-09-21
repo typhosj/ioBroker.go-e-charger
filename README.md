@@ -241,6 +241,13 @@ If you enjoyed this project – or are just feeling generous – consider buying
 - (typhosj) the phase mode (`psm`) is now only written when the charger reports a different mode instead of every cycle, because it is a stored charger setting
 - (typhosj) ChargeManager: new state `Settings.PhaseMode` switches between fixed one-phase, fixed three-phase and automatic phase switching at runtime; the instance option now only makes the automatic mode available
 - (typhosj) ChargeManager: no charge release, charging current or phase switch is sent while no vehicle is plugged in, and an unchanged release or current is no longer re-sent every cycle - each write woke the charger's LEDs
+- (typhosj) the charging current is no longer re-sent every cycle: the charger reports a written `amx` back as 0 and only shows the applied current in `amp`, so the check for an unchanged value never matched
+- (typhosj) the charge release is no longer re-sent endlessly while the vehicle reports that it has finished charging - the charger confirms each write and keeps ignoring it, which woke the charger every cycle for up to 90 minutes
+- (typhosj) ChargeManager: the charging current no longer follows a one-ampere change of its target, so a passing cloud no longer makes it step back and forth every cycle
+- (typhosj) ChargeManager: the automatic 1-/3-phase switching now keeps a real gap between switching up and switching back down - for a 16 A wallbox both thresholds used to be the same value
+- (typhosj) ChargeNOW and ChargeManager now switch each other off instead of both staying on with ChargeNOW silently taking precedence
+- (typhosj) ChargeNOW now ends by itself when the vehicle is unplugged, and, with "stop when the vehicle stops charging" configured, when the vehicle stops drawing power - it used to hold the charge release until the switch was pressed again
+- (typhosj) ChargeNOW no longer sends anything while it waits for a vehicle to be plugged in, so it cannot wake a sleeping charger
 
 ### 1.7.0 (2026-09-18)
 
