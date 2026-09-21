@@ -696,8 +696,10 @@ export function isVehicleDisconnected(carState: number): boolean {
 
 /** go-e car state for a vehicle that is plugged in and has finished charging */
 export const CAR_STATE_FINISHED = 4;
-/** Consecutive ignored charge releases after which the adapter stops re-sending it */
-export const RELEASE_RETRY_LIMIT = 6;
+/** Consecutive ignored charge releases that are still retried on every single cycle */
+export const RELEASE_RETRY_LIMIT = 30;
+/** After that many ignored releases, the release is only retried every this many cycles */
+export const RELEASE_RETRY_INTERVAL = 6;
 
 /**
  * Counts how often in a row the charger kept reporting a charge release other than the one it was
@@ -720,19 +722,27 @@ export function updateReleaseRejects(reportedAllow: number, requestedAllow: numb
 }
 
 /**
- * Whether to stop re-sending the charge release because the charger keeps ignoring it.
+ * Whether to skip re-sending the charge release this cycle because the charger keeps ignoring it.
  *
- * This only ever applies to a vehicle that reports it has finished charging: it will not take the
- * release again until it is unplugged or wakes up by itself, and retrying every cycle just wakes
- * the charger for nothing. Every other car state keeps retrying, because there the release is
- * normally accepted within a cycle or two.
+ * A vehicle that reports it has finished charging does not necessarily refuse the release for
+ * good: in the logged sessions it took it after two to seven consecutive writes, so the repeated
+ * writes are what wakes it, not wasted effort. They are only wasted once the vehicle has ignored
+ * them for a long while - 2026-09-19 has a stretch of 17 minutes with no reaction at all.
+ *
+ * So the release is never given up on. It is retried on every cycle for the first
+ * {@link RELEASE_RETRY_LIMIT} attempts, which covers every wake-up seen so far with a wide margin,
+ * and only then thinned out to every {@link RELEASE_RETRY_INTERVAL} cycles. The vehicle can still
+ * wake up at any time; the worst case is that it does so up to one interval later.
  *
  * @param rejects Consecutive ignored releases from {@link updateReleaseRejects}
  * @param carState go-e car state as reported by the charger
- * @returns `true` while the release should be withheld
+ * @returns `true` while the release should not be sent this cycle
  */
 export function holdRejectedRelease(rejects: number, carState: number): boolean {
-	return carState === CAR_STATE_FINISHED && Number.isFinite(rejects) && rejects >= RELEASE_RETRY_LIMIT;
+	if (carState !== CAR_STATE_FINISHED || !Number.isFinite(rejects) || rejects < RELEASE_RETRY_LIMIT) {
+		return false;
+	}
+	return (Math.trunc(rejects) - RELEASE_RETRY_LIMIT) % RELEASE_RETRY_INTERVAL !== 0;
 }
 
 /**

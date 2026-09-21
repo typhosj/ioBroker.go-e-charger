@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RELEASE_RETRY_LIMIT = exports.CAR_STATE_FINISHED = exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.CURRENT_DEADBAND = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
+exports.RELEASE_RETRY_INTERVAL = exports.RELEASE_RETRY_LIMIT = exports.CAR_STATE_FINISHED = exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.CURRENT_DEADBAND = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
 exports.resolveWallboxCurrentLimits = resolveWallboxCurrentLimits;
 exports.evaluateBatteryAvailability = evaluateBatteryAvailability;
 exports.calculateAvailableSurplusPower = calculateAvailableSurplusPower;
@@ -276,7 +276,8 @@ function isVehicleDisconnected(carState) {
     return carState === 1;
 }
 exports.CAR_STATE_FINISHED = 4;
-exports.RELEASE_RETRY_LIMIT = 6;
+exports.RELEASE_RETRY_LIMIT = 30;
+exports.RELEASE_RETRY_INTERVAL = 6;
 function updateReleaseRejects(reportedAllow, requestedAllow, previous) {
     if (requestedAllow === null || !Number.isFinite(reportedAllow) || reportedAllow === requestedAllow) {
         return 0;
@@ -284,7 +285,10 @@ function updateReleaseRejects(reportedAllow, requestedAllow, previous) {
     return (Number.isFinite(previous) ? Math.max(0, Math.trunc(previous)) : 0) + 1;
 }
 function holdRejectedRelease(rejects, carState) {
-    return carState === exports.CAR_STATE_FINISHED && Number.isFinite(rejects) && rejects >= exports.RELEASE_RETRY_LIMIT;
+    if (carState !== exports.CAR_STATE_FINISHED || !Number.isFinite(rejects) || rejects < exports.RELEASE_RETRY_LIMIT) {
+        return false;
+    }
+    return (Math.trunc(rejects) - exports.RELEASE_RETRY_LIMIT) % exports.RELEASE_RETRY_INTERVAL !== 0;
 }
 const COMMAND_READBACK = { alw: "alw", amp: "amp", amx: "amp" };
 function dropUnchangedChargerCommands(commands, reported) {

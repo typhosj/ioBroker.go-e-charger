@@ -734,7 +734,7 @@ class go_e_charger extends utils.Adapter {
         const rejectsBefore = this.wallboxInfoList[iWB].ReleaseRejects;
         this.wallboxInfoList[iWB].ReleaseRejects = (0, chargeManagerUtils_1.updateReleaseRejects)(Number(status.alw), this.wallboxInfoList[iWB].RequestedAllow, rejectsBefore);
         if (rejectsBefore < chargeManagerUtils_1.RELEASE_RETRY_LIMIT && this.wallboxInfoList[iWB].ReleaseRejects >= chargeManagerUtils_1.RELEASE_RETRY_LIMIT) {
-            this.log.info(`Charger ${iWB}: the charge release was ignored ${this.wallboxInfoList[iWB].ReleaseRejects} times in a row - not retrying until the vehicle reports something other than "charge finished"`);
+            this.log.info(`Charger ${iWB}: the charge release was ignored ${this.wallboxInfoList[iWB].ReleaseRejects} times in a row - still retrying, but only every ${chargeManagerUtils_1.RELEASE_RETRY_INTERVAL} cycles from now on`);
         }
         switch (status.alw) {
             case "0":

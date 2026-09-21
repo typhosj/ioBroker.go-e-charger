@@ -19,6 +19,7 @@ import {
 	holdRejectedRelease,
 	isVehicleDisconnected,
 	MIN_CHARGE_CURRENT,
+	RELEASE_RETRY_INTERVAL,
 	RELEASE_RETRY_LIMIT,
 	resolveWallboxCurrentLimits,
 	updateReleaseRejects,
@@ -1145,7 +1146,7 @@ class go_e_charger extends utils.Adapter {
 		this.wallboxInfoList[iWB].ReleaseRejects = updateReleaseRejects(Number(status.alw), this.wallboxInfoList[iWB].RequestedAllow, rejectsBefore);
 		if (rejectsBefore < RELEASE_RETRY_LIMIT && this.wallboxInfoList[iWB].ReleaseRejects >= RELEASE_RETRY_LIMIT) {
 			this.log.info(
-				`Charger ${iWB}: the charge release was ignored ${this.wallboxInfoList[iWB].ReleaseRejects} times in a row - not retrying until the vehicle reports something other than "charge finished"`,
+				`Charger ${iWB}: the charge release was ignored ${this.wallboxInfoList[iWB].ReleaseRejects} times in a row - still retrying, but only every ${RELEASE_RETRY_INTERVAL} cycles from now on`,
 			);
 		}
 		switch (status.alw) {
@@ -1533,8 +1534,8 @@ class go_e_charger extends utils.Adapter {
 
 		let pending = dropUnchangedChargerCommands(commands, this.wallboxInfoList[iWB].Reported);
 		if (holdRejectedRelease(this.wallboxInfoList[iWB].ReleaseRejects, this.wallboxInfoList[iWB].CarState)) {
-			// the vehicle has finished and keeps refusing the release - withdrawing it still works,
-			// everything else would only wake the charger for nothing
+			// the vehicle has finished and keeps ignoring the release - the retries continue at a
+			// lower rate, so this cycle sends nothing but a withdrawal, which is never held back
 			pending = pending.filter(command => command.parameter === "alw" && command.value === 0);
 		}
 		if (pending.length === 0) {
