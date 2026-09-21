@@ -16,9 +16,12 @@ import {
 	MAX_CHARGE_CURRENT,
 	evaluateBatteryAvailability,
 	limitTotalCurrent,
+	holdRejectedRelease,
 	isVehicleDisconnected,
 	MIN_CHARGE_CURRENT,
+	RELEASE_RETRY_LIMIT,
 	resolveWallboxCurrentLimits,
+	updateReleaseRejects,
 	IDLE_RELEASE_DELAY_MS,
 	PHASE_MODE_AUTO,
 	phaseModeOf,
@@ -184,6 +187,8 @@ class go_e_charger extends utils.Adapter {
 				ChargeNowIdleDelay: 0,
 				ChargeNowSawVehicle: false,
 				Reported: {},
+				RequestedAllow: null,
+				ReleaseRejects: 0,
 				CurrentHysteresis: 0,
 				SetOptAmp: 5,
 				SetOptAllow: false,
@@ -998,6 +1003,8 @@ class go_e_charger extends utils.Adapter {
 			.catch(error => {
 				// without a fresh read every command is sent again
 				this.wallboxInfoList[iWB].Reported = {};
+				this.wallboxInfoList[iWB].RequestedAllow = null;
+				this.wallboxInfoList[iWB].ReleaseRejects = 0;
 				if (error.message && error.message.includes("EHOSTUNREACH")) {
 					this.log.error(`Charger unreachable error when calling go-eCharger API: ${error}`);
 					this.wallboxInfoList[iWB].Firmware = `EHostUnreach`;
@@ -1134,6 +1141,13 @@ class go_e_charger extends utils.Adapter {
 			"value.current",
 		);
 		this.wallboxInfoList[iWB].Reported = { alw: Number(status.alw), amp: Number(status.amp), amx: Number(status.amx) };
+		const rejectsBefore = this.wallboxInfoList[iWB].ReleaseRejects;
+		this.wallboxInfoList[iWB].ReleaseRejects = updateReleaseRejects(Number(status.alw), this.wallboxInfoList[iWB].RequestedAllow, rejectsBefore);
+		if (rejectsBefore < RELEASE_RETRY_LIMIT && this.wallboxInfoList[iWB].ReleaseRejects >= RELEASE_RETRY_LIMIT) {
+			this.log.info(
+				`Charger ${iWB}: the charge release was ignored ${this.wallboxInfoList[iWB].ReleaseRejects} times in a row - not retrying until the vehicle reports something other than "charge finished"`,
+			);
+		}
 		switch (status.alw) {
 			case "0":
 				await this.projectUtils.checkAndSetValueBoolean(`${basePath}.Power.ChargingAllowed`, false, `Charging allowed`, "indicator");
@@ -1517,7 +1531,12 @@ class go_e_charger extends utils.Adapter {
 			return;
 		}
 
-		const pending = dropUnchangedChargerCommands(commands, this.wallboxInfoList[iWB].Reported);
+		let pending = dropUnchangedChargerCommands(commands, this.wallboxInfoList[iWB].Reported);
+		if (holdRejectedRelease(this.wallboxInfoList[iWB].ReleaseRejects, this.wallboxInfoList[iWB].CarState)) {
+			// the vehicle has finished and keeps refusing the release - withdrawing it still works,
+			// everything else would only wake the charger for nothing
+			pending = pending.filter(command => command.parameter === "alw" && command.value === 0);
+		}
 		if (pending.length === 0) {
 			// the charger already is in the requested state - saying so every cycle only floods the log
 			return;
@@ -1533,6 +1552,7 @@ class go_e_charger extends utils.Adapter {
 				this.log.debug(`Sent to charger ${iWB}: ${command.parameter}=${command.value}`);
 
 				if (command.parameter === "alw") {
+					this.wallboxInfoList[iWB].RequestedAllow = command.value;
 					await this.projectUtils.checkAndSetValueBoolean(`${basePath}.Power.ChargingAllowed`, command.value === 1, `Charging allowed`, `indicator`);
 				} else {
 					const result = JSON.parse(response.data);

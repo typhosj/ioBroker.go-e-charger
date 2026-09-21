@@ -1,6 +1,7 @@
 import { strict as assert } from "node:assert";
 import {
 	buildChargerCommands,
+	CAR_STATE_FINISHED,
 	calculateOptimalChargeCurrent,
 	type ChargeManagerControllerInput,
 	decideChargeManager,
@@ -9,6 +10,7 @@ import {
 	decidePhaseSwitch,
 	dropUnchangedChargerCommands,
 	evaluateBatteryAvailability,
+	holdRejectedRelease,
 	type FleetParticipant,
 	limitTotalCurrent,
 	IDLE_CHARGE_POWER,
@@ -24,10 +26,12 @@ import {
 	phaseModeToSend,
 	resolvePhaseModeWrite,
 	PHASE_VOLTAGE,
+	RELEASE_RETRY_LIMIT,
 	resolveWallboxCurrentLimits,
 	SHUTDOWN_DELAY_CYCLES,
 	START_CHARGE_CURRENT,
 	stepChargeCurrent,
+	updateReleaseRejects,
 	updateShutdownDelay,
 } from "./lib/chargeManagerUtils";
 
@@ -1021,6 +1025,55 @@ describe("ChargeManager safety helpers", () => {
 		it("reports the manual phase request otherwise", () => {
 			assert.equal(phaseModeOf(false, true), 3);
 			assert.equal(phaseModeOf(false, false), 1);
+		});
+	});
+
+	describe("updateReleaseRejects / holdRejectedRelease", () => {
+		it("counts only releases the charger did not apply", () => {
+			assert.equal(updateReleaseRejects(0, 1, 0), 1);
+			assert.equal(updateReleaseRejects(0, 1, 4), 5);
+			assert.equal(updateReleaseRejects(1, 1, 4), 0);
+			assert.equal(updateReleaseRejects(0, 0, 4), 0);
+		});
+
+		it("counts nothing without a request or a usable reading", () => {
+			assert.equal(updateReleaseRejects(0, null, 4), 0);
+			assert.equal(updateReleaseRejects(Number.NaN, 1, 4), 0);
+		});
+
+		it("survives a corrupt counter", () => {
+			assert.equal(updateReleaseRejects(0, 1, Number.NaN), 1);
+			assert.equal(updateReleaseRejects(0, 1, -7), 1);
+			assert.equal(updateReleaseRejects(0, 1, 2.6), 3);
+		});
+
+		it("holds the release only for a finished vehicle, and only at the limit", () => {
+			assert.equal(holdRejectedRelease(RELEASE_RETRY_LIMIT - 1, CAR_STATE_FINISHED), false);
+			assert.equal(holdRejectedRelease(RELEASE_RETRY_LIMIT, CAR_STATE_FINISHED), true);
+			for (const carState of [0, 1, 2, 3]) {
+				assert.equal(holdRejectedRelease(RELEASE_RETRY_LIMIT * 10, carState), false);
+			}
+		});
+
+		it("does not hold on a corrupt counter", () => {
+			assert.equal(holdRejectedRelease(Number.NaN, CAR_STATE_FINISHED), false);
+		});
+
+		it("reproduces the 2026-09-19 run and stops retrying after the limit", () => {
+			// 291 cycles of "write alw=1, read back alw=0" with the vehicle reporting car state 4
+			let rejects = 0;
+			let held = 0;
+			for (let cycle = 0; cycle < 291; cycle++) {
+				if (holdRejectedRelease(rejects, CAR_STATE_FINISHED)) {
+					held++;
+					continue; // nothing is written, so the reported release cannot change either
+				}
+				rejects = updateReleaseRejects(0, 1, rejects);
+			}
+			assert.equal(rejects, RELEASE_RETRY_LIMIT);
+			assert.equal(held, 291 - RELEASE_RETRY_LIMIT);
+			// the vehicle wakes up: retrying resumes immediately
+			assert.equal(holdRejectedRelease(rejects, 2), false);
 		});
 	});
 

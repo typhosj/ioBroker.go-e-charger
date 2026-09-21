@@ -694,6 +694,47 @@ export function isVehicleDisconnected(carState: number): boolean {
 	return carState === 1;
 }
 
+/** go-e car state for a vehicle that is plugged in and has finished charging */
+export const CAR_STATE_FINISHED = 4;
+/** Consecutive ignored charge releases after which the adapter stops re-sending it */
+export const RELEASE_RETRY_LIMIT = 6;
+
+/**
+ * Counts how often in a row the charger kept reporting a charge release other than the one it was
+ * last told to apply.
+ *
+ * The charger answers every write with HTTP 200 and then quietly keeps its own value, so an
+ * ignored release looks exactly like a successful one until the next read. On 2026-09-19 that
+ * produced 291 consecutive ignored writes over 90 minutes.
+ *
+ * @param reportedAllow Charge release the charger reports now (`alw`)
+ * @param requestedAllow Charge release last written to the charger, or `null` if none was
+ * @param previous Consecutive ignored releases so far
+ * @returns The updated count; 0 as soon as the charger agrees or nothing was requested
+ */
+export function updateReleaseRejects(reportedAllow: number, requestedAllow: number | null, previous: number): number {
+	if (requestedAllow === null || !Number.isFinite(reportedAllow) || reportedAllow === requestedAllow) {
+		return 0;
+	}
+	return (Number.isFinite(previous) ? Math.max(0, Math.trunc(previous)) : 0) + 1;
+}
+
+/**
+ * Whether to stop re-sending the charge release because the charger keeps ignoring it.
+ *
+ * This only ever applies to a vehicle that reports it has finished charging: it will not take the
+ * release again until it is unplugged or wakes up by itself, and retrying every cycle just wakes
+ * the charger for nothing. Every other car state keeps retrying, because there the release is
+ * normally accepted within a cycle or two.
+ *
+ * @param rejects Consecutive ignored releases from {@link updateReleaseRejects}
+ * @param carState go-e car state as reported by the charger
+ * @returns `true` while the release should be withheld
+ */
+export function holdRejectedRelease(rejects: number, carState: number): boolean {
+	return carState === CAR_STATE_FINISHED && Number.isFinite(rejects) && rejects >= RELEASE_RETRY_LIMIT;
+}
+
 /**
  * The status field a written command reads back from. `amx` is write-only on the charger and
  * always reports 0, while the current it set shows up in `amp` - comparing `amx` against itself

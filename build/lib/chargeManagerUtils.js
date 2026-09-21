@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.CURRENT_DEADBAND = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
+exports.RELEASE_RETRY_LIMIT = exports.CAR_STATE_FINISHED = exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.CURRENT_DEADBAND = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
 exports.resolveWallboxCurrentLimits = resolveWallboxCurrentLimits;
 exports.evaluateBatteryAvailability = evaluateBatteryAvailability;
 exports.calculateAvailableSurplusPower = calculateAvailableSurplusPower;
@@ -15,6 +15,8 @@ exports.resolvePhaseModeWrite = resolvePhaseModeWrite;
 exports.phaseModeOf = phaseModeOf;
 exports.decideIdleRelease = decideIdleRelease;
 exports.isVehicleDisconnected = isVehicleDisconnected;
+exports.updateReleaseRejects = updateReleaseRejects;
+exports.holdRejectedRelease = holdRejectedRelease;
 exports.dropUnchangedChargerCommands = dropUnchangedChargerCommands;
 exports.buildChargerCommands = buildChargerCommands;
 exports.limitTotalCurrent = limitTotalCurrent;
@@ -272,6 +274,17 @@ function decideIdleRelease(input) {
 }
 function isVehicleDisconnected(carState) {
     return carState === 1;
+}
+exports.CAR_STATE_FINISHED = 4;
+exports.RELEASE_RETRY_LIMIT = 6;
+function updateReleaseRejects(reportedAllow, requestedAllow, previous) {
+    if (requestedAllow === null || !Number.isFinite(reportedAllow) || reportedAllow === requestedAllow) {
+        return 0;
+    }
+    return (Number.isFinite(previous) ? Math.max(0, Math.trunc(previous)) : 0) + 1;
+}
+function holdRejectedRelease(rejects, carState) {
+    return carState === exports.CAR_STATE_FINISHED && Number.isFinite(rejects) && rejects >= exports.RELEASE_RETRY_LIMIT;
 }
 const COMMAND_READBACK = { alw: "alw", amp: "amp", amx: "amp" };
 function dropUnchangedChargerCommands(commands, reported) {
