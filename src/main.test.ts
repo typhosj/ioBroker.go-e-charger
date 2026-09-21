@@ -565,6 +565,36 @@ describe("ChargeManager safety helpers", () => {
 			assert.equal(stepChargeCurrent(32, 40, 32), 32); // already at the maximum, stays
 			assert.equal(stepChargeCurrent(10, 40, 20), 11); // steps toward the target bounded by the maximum
 		});
+
+		it("ignores a one-ampere target change inside the range", () => {
+			// a passing cloud moves the target by 1 A - following it makes the charger hunt
+			assert.equal(stepChargeCurrent(10, 11, 16, 8), 10);
+			assert.equal(stepChargeCurrent(10, 9, 16, 8), 10);
+			assert.equal(stepChargeCurrent(10, 12, 16, 8), 11);
+			assert.equal(stepChargeCurrent(10, 8, 16, 8), 9);
+		});
+
+		it("settles instead of oscillating when the target alternates by one ampere", () => {
+			// the 2026-09-19 pattern: the target flipped between 10 and 11 A every cycle
+			let current = 10;
+			for (let cycle = 0; cycle < 20; cycle++) {
+				current = stepChargeCurrent(current, cycle % 2 === 0 ? 11 : 10, 16, 8);
+			}
+			assert.equal(current, 10);
+		});
+
+		it("keeps both ends of the usable range reachable", () => {
+			assert.equal(stepChargeCurrent(11, 12, 16, 12), 12); // ramping up to a raised minimum
+			assert.equal(stepChargeCurrent(15, 16, 16, 8), 16); // reaching the configured maximum
+			assert.equal(stepChargeCurrent(1, 0, 16, 8), 0); // stopping is never blocked
+			assert.equal(stepChargeCurrent(9, 8, 16, 8), 8); // stepping down onto the minimum
+		});
+
+		it("recovers an invalid minimum instead of blocking the deadband", () => {
+			assert.equal(stepChargeCurrent(10, 11, 16, Number.NaN), 10);
+			assert.equal(stepChargeCurrent(10, 11, 16, 20), 10); // minimum above the maximum
+			assert.equal(stepChargeCurrent(10, 11, 16, 0), 10);
+		});
 	});
 
 	describe("buildChargerCommands", () => {

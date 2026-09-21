@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
+exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.CURRENT_DEADBAND = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
 exports.resolveWallboxCurrentLimits = resolveWallboxCurrentLimits;
 exports.evaluateBatteryAvailability = evaluateBatteryAvailability;
 exports.calculateAvailableSurplusPower = calculateAvailableSurplusPower;
@@ -113,15 +113,19 @@ function calculateOptimalChargeCurrent(input) {
     const calculatedCurrent = Math.floor(availablePower / exports.PHASE_VOLTAGE / input.phases);
     return Math.max(0, Math.min(calculatedCurrent, input.maximumChargeCurrent));
 }
-function stepChargeCurrent(current, target, maximum = exports.MAX_CHARGE_CURRENT) {
+exports.CURRENT_DEADBAND = 2;
+function stepChargeCurrent(current, target, maximum = exports.MAX_CHARGE_CURRENT, minimum = exports.MIN_CHARGE_CURRENT) {
     const safeMaximum = Number.isInteger(maximum) && maximum >= exports.MIN_CHARGE_CURRENT && maximum <= exports.MAX_CHARGE_CURRENT ? maximum : exports.MAX_CHARGE_CURRENT;
+    const safeMinimum = Number.isInteger(minimum) && minimum >= exports.MIN_CHARGE_CURRENT && minimum <= safeMaximum ? minimum : exports.MIN_CHARGE_CURRENT;
     const safeCurrent = Number.isFinite(current) ? Math.max(0, Math.min(Math.trunc(current), safeMaximum)) : 0;
     const safeTarget = Number.isFinite(target) ? Math.max(0, Math.min(Math.trunc(target), safeMaximum)) : 0;
-    if (safeCurrent < safeTarget) {
-        return safeCurrent + 1;
+    const gap = safeTarget - safeCurrent;
+    if (gap === 0) {
+        return safeCurrent;
     }
-    if (safeCurrent > safeTarget) {
-        return safeCurrent - 1;
+    const atRangeEnd = safeTarget <= safeMinimum || safeTarget === safeMaximum;
+    if (atRangeEnd || Math.abs(gap) >= exports.CURRENT_DEADBAND) {
+        return safeCurrent + Math.sign(gap);
     }
     return safeCurrent;
 }
@@ -145,7 +149,7 @@ function decideChargeManager(input) {
             nextState: { currentAmp: 0, shutdownDelay: 0 },
         };
     }
-    const currentAmp = stepChargeCurrent(input.state.currentAmp, optimalCurrent, input.maximumChargeCurrent);
+    const currentAmp = stepChargeCurrent(input.state.currentAmp, optimalCurrent, input.maximumChargeCurrent, input.minimumChargeCurrent);
     const startChargeCurrent = Math.min(Math.max(exports.START_CHARGE_CURRENT, input.minimumChargeCurrent), input.maximumChargeCurrent);
     const isRampingToRaisedMinimum = input.minimumChargeCurrent > exports.START_CHARGE_CURRENT && optimalCurrent >= input.minimumChargeCurrent && currentAmp < input.minimumChargeCurrent;
     let shutdownDelay = isRampingToRaisedMinimum ? 0 : updateShutdownDelay(currentAmp, input.minimumChargeCurrent, input.state.shutdownDelay);
