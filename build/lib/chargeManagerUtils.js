@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
+exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
 exports.resolveWallboxCurrentLimits = resolveWallboxCurrentLimits;
 exports.evaluateBatteryAvailability = evaluateBatteryAvailability;
 exports.calculateAvailableSurplusPower = calculateAvailableSurplusPower;
@@ -26,6 +26,7 @@ exports.DEFAULT_RESERVE_POWER = 100;
 exports.DEFAULT_MAXIMUM_BATTERY_BONUS = 2000;
 exports.PHASE_VOLTAGE = 230;
 exports.PHASE_SWITCH_DELAY_CYCLES = 12;
+exports.PHASE_SWITCH_HYSTERESIS = 1.25;
 function resolveWallboxCurrentLimits(input) {
     const isUsable = (value) => typeof value === "number" && Number.isFinite(value) && value > 0;
     const installationMax = Number.isFinite(input.installationMaxCurrent) && input.installationMaxCurrent > 0 ? Math.floor(input.installationMaxCurrent) : exports.MAX_CHARGE_CURRENT;
@@ -207,7 +208,7 @@ function decidePhaseSwitch(input) {
         return { targetPhases: input.currentPhases, switchDelay: 0 };
     }
     const threePhaseMinPower = input.minimumChargeCurrent * 3 * exports.PHASE_VOLTAGE;
-    const upThreshold = Math.max(input.maximumChargeCurrent * exports.PHASE_VOLTAGE, threePhaseMinPower);
+    const upThreshold = Math.max(input.maximumChargeCurrent * exports.PHASE_VOLTAGE, threePhaseMinPower * exports.PHASE_SWITCH_HYSTERESIS);
     let targetPhases = input.currentPhases;
     if (input.currentPhases === 1 && input.availablePower >= upThreshold) {
         targetPhases = 3;
