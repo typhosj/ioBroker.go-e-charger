@@ -1003,6 +1003,27 @@ describe("ChargeManager safety helpers", () => {
 			assert.deepEqual(decision, { withdraw: false, nextState: idleState });
 		});
 
+		it("rides out a short car state 4 as ChargeNOW uses it, so a phase switch does not end the session", () => {
+			// a one-/three-phase switch parks the charger in state 4 for a cycle or two
+			let state = idleState;
+			for (const [carState, chargePower] of [
+				[2, 4100],
+				[4, 0],
+				[4, 0],
+				[2, 4100],
+			] as const) {
+				const decision = decideIdleRelease(input({ carState, chargePower, controllerAction: "enable", state }));
+				assert.equal(decision.withdraw, false);
+				state = decision.nextState;
+			}
+			assert.deepEqual(state, idleState);
+		});
+
+		it("ends a ChargeNOW session once the vehicle stayed idle for the whole delay", () => {
+			const decision = decideIdleRelease(input({ carState: 4, controllerAction: "enable", state: { idleDelay: 2, latched: false } }));
+			assert.equal(decision.withdraw, true);
+		});
+
 		it("treats the power threshold as exclusive", () => {
 			assert.equal(decideIdleRelease(input({ chargePower: IDLE_CHARGE_POWER - 1, state: { idleDelay: 2, latched: false } })).withdraw, true);
 			assert.equal(decideIdleRelease(input({ chargePower: IDLE_CHARGE_POWER, state: { idleDelay: 2, latched: false } })).withdraw, false);

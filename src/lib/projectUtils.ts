@@ -112,6 +112,16 @@ export interface IWallboxInfo {
 	 */
 	IdleReleaseLatched: boolean;
 	/**
+	 * Consecutive cycles the connected vehicle ignored the ChargeNOW release (counted separately
+	 * from {@link IWallboxInfo.IdleReleaseDelay}, which the ChargeManager resets while ChargeNOW runs)
+	 */
+	ChargeNowIdleDelay: number;
+	/**
+	 * Whether a vehicle was connected at any point during the running ChargeNOW session. Only then
+	 * does "no vehicle" mean unplugged - before that it means ChargeNOW is still waiting for one.
+	 */
+	ChargeNowSawVehicle: boolean;
+	/**
 	 * Charge release and currents the charger reported in the last successful API V1 read
 	 */
 	Reported: Partial<Record<"alw" | "amp" | "amx", number>>;
