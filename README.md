@@ -249,6 +249,9 @@ If you enjoyed this project – or are just feeling generous – consider buying
 - (typhosj) ChargeNOW now ends by itself when the vehicle is unplugged, and, with "stop when the vehicle stops charging" configured, when the vehicle stops drawing power - it used to hold the charge release until the switch was pressed again
 - (typhosj) ChargeNOW no longer sends anything while it waits for a vehicle to be plugged in, so it cannot wake a sleeping charger
 - (typhosj) new state `Wallbox_X.info.chargeState` explains why the charger is charging or not - waiting for a vehicle, charging the home battery first, not enough surplus, ramping up; the reason is also logged whenever it changes. A charger that simply never started used to leave no trace in the log at all
+- (typhosj) with ChargeNOW and ChargeManager both switched off, the adapter now only withdraws a charge release it gave itself - a charge started from the go-e app, the button or the charger's own default was aborted within seconds, again and again, until the vehicle gave up (Renault Zoe: "check connections")
+- (typhosj) ChargeManager: when it takes over a charger that is already charging, it now continues at the current the vehicle charges with instead of ramping up from 0 A, and no longer inherits the shutdown delay or phase-switch dwell of an earlier run - switching from ChargeNOW to ChargeManager used to withdraw the release and switch phases in the very first cycle
+- (typhosj) ChargeManager: a cycle that switches the phase count now sizes the charging current for the new phase count, so a switch to one phase no longer withdraws the charge release at the same time
 
 ### 1.7.0 (2026-09-18)
 

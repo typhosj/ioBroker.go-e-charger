@@ -6,9 +6,9 @@ import {
 	type BatteryMode,
 	buildChargerCommands,
 	type ChargeManagerDecision,
-	decideChargeManagerFleet,
 	decideIdleRelease,
-	decidePhaseSwitch,
+	planChargeManagerFleet,
+	seedChargeManagerState,
 	dropUnchangedChargerCommands,
 	DEFAULT_MAXIMUM_BATTERY_BONUS,
 	DEFAULT_RESERVE_POWER,
@@ -24,6 +24,7 @@ import {
 	resolveStartChargeCurrent,
 	resolveWallboxCurrentLimits,
 	updateReleaseRejects,
+	withdrawReleaseWithModesOff,
 	IDLE_RELEASE_DELAY_MS,
 	PHASE_MODE_AUTO,
 	phaseModeOf,
@@ -191,6 +192,8 @@ class go_e_charger extends utils.Adapter {
 				ChargeNowSawVehicle: false,
 				Reported: {},
 				RequestedAllow: null,
+				ReleasedByAdapter: false,
+				ChargeManagerRunning: false,
 				ReleaseRejects: 0,
 				CurrentHysteresis: 0,
 				SetOptAmp: 5,
@@ -665,6 +668,7 @@ class go_e_charger extends utils.Adapter {
 				}
 				if (!info.ChargeManager || info.ChargeNOW) {
 					this.resetIdleRelease(iWB);
+					this.wallboxInfoList[iWB].ChargeManagerRunning = false;
 				}
 				if (info.ChargeNOW) {
 					// while ChargeNOW is armed but nothing is plugged in yet, not a single command is
@@ -746,7 +750,12 @@ class go_e_charger extends utils.Adapter {
 				} else {
 					// both modes off: if the adapter previously enabled charging, switch it off again
 					await this.setChargeState(iWB, `ChargeNOW and ChargeManager are both switched off`);
-					if ((await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.ChargingAllowed`)) == true) {
+					if (
+						withdrawReleaseWithModesOff(
+							await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.ChargingAllowed`),
+							this.wallboxInfoList[iWB].ReleasedByAdapter,
+						)
+					) {
 						this.wallboxInfoList[iWB].SetAmp = 0;
 						await this.Charge_Config("0", this.wallboxInfoList[iWB].MinAmp, `Deactivate go-eCharger`, iWB);
 					}
@@ -1562,6 +1571,9 @@ class go_e_charger extends utils.Adapter {
 			this.log.warn(`Invalid charging current for charger ${iWB}: ${Ampere} A`);
 			return;
 		}
+		// set on the request, not on the write: a release the charger already reports is not re-sent,
+		// but the adapter still wants it and has to withdraw it when both modes are switched off
+		this.wallboxInfoList[iWB].ReleasedByAdapter = Allow === "1";
 
 		let pending = dropUnchangedChargerCommands(commands, this.wallboxInfoList[iWB].Reported);
 		if (holdRejectedRelease(this.wallboxInfoList[iWB].ReleaseRejects, this.wallboxInfoList[iWB].CarState)) {
@@ -1641,6 +1653,19 @@ class go_e_charger extends utils.Adapter {
 
 		for (const iWB of candidates) {
 			this.wallboxInfoList[iWB].ChargePower = await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.Charge`);
+			if (!this.wallboxInfoList[iWB].ChargeManagerRunning) {
+				// taking over: nothing carried over from an earlier run, and a running charge keeps its current
+				const seed = seedChargeManagerState(
+					this.wallboxInfoList[iWB].Reported.alw,
+					this.wallboxInfoList[iWB].Reported.amp,
+					Math.min(Math.max(chargeManagerMinCurrent, this.wallboxInfoList[iWB].MinAmp), this.wallboxInfoList[iWB].MaxAmp),
+					this.wallboxInfoList[iWB].MaxAmp,
+				);
+				this.wallboxInfoList[iWB].SetAmp = seed.currentAmp;
+				this.wallboxInfoList[iWB].DelayOff = seed.shutdownDelay;
+				this.wallboxInfoList[iWB].PhaseSwitchDelay = 0;
+				this.wallboxInfoList[iWB].ChargeManagerRunning = true;
+			}
 
 			const batteryDecision = evaluateBatteryAvailability({
 				mode: chargeManagerBatteryMode,
@@ -1682,7 +1707,14 @@ class go_e_charger extends utils.Adapter {
 			this.log.debug(`Got external state of battery SoC: ${batterySoc}%`);
 		}
 
-		const decisions = decideChargeManagerFleet(
+		// automatic one-/three-phase switching (opt-in, gen3+ only); without a vehicle there is
+		// nothing to switch for - every phase switch wakes the charger
+		const phaseInputs = served.map(iWB =>
+			this.wallboxInfoList[iWB].AutoPhase && this.wallboxInfoList[iWB].HardwareMin3 && !isVehicleDisconnected(this.wallboxInfoList[iWB].CarState)
+				? { currentPhases: this.wallboxInfoList[iWB].EnabledPhases, switchDelay: this.wallboxInfoList[iWB].PhaseSwitchDelay }
+				: null,
+		);
+		const { decisions, phases: phaseDecisions } = planChargeManagerFleet(
 			{
 				solarPower,
 				houseConsumption,
@@ -1695,6 +1727,7 @@ class go_e_charger extends utils.Adapter {
 				maximumBatteryBonus: chargeManagerMaxBatteryBonus,
 			},
 			participants,
+			phaseInputs,
 		);
 
 		served.forEach((iWB, index) => {
@@ -1707,32 +1740,24 @@ class go_e_charger extends utils.Adapter {
 				`ChargeManager charger ${iWB}: surplus ${Math.round(decision.availablePower)} W → optimal ${decision.optimalCurrent ?? 0} A, ramp ${decision.nextState.currentAmp} A, action=${decision.action} (${decision.reason}), car=${carState}`,
 			);
 
-			// automatic one-/three-phase switching (opt-in, gen3+ only). The decision uses the phase
-			// count the allocation just ran with; the switch is applied this cycle and the next cycle
-			// allocates with the new phase count.
-			// without a vehicle there is nothing to switch for - every phase switch wakes the charger
-			if (this.wallboxInfoList[iWB].AutoPhase && this.wallboxInfoList[iWB].HardwareMin3 && !isVehicleDisconnected(this.wallboxInfoList[iWB].CarState)) {
-				const participant = participants[index];
-				const phaseDecision = decidePhaseSwitch({
-					currentPhases: this.wallboxInfoList[iWB].EnabledPhases,
-					availablePower: decisions[index].availablePower,
-					minimumChargeCurrent: participant.minimumChargeCurrent,
-					maximumChargeCurrent: participant.maximumChargeCurrent,
-					switchDelay: this.wallboxInfoList[iWB].PhaseSwitchDelay,
-				});
-				this.wallboxInfoList[iWB].PhaseSwitchDelay = phaseDecision.switchDelay;
-				// phase-switch control loop: show the current/target phase and the pending dwell counter
-				this.log.debug(
-					`ChargeManager charger ${iWB} phase: ${this.wallboxInfoList[iWB].EnabledPhases}p now, target ${phaseDecision.targetPhases}p, dwell ${phaseDecision.switchDelay}`,
+			const phaseDecision = phaseDecisions[index];
+			if (!phaseDecision) {
+				// a dwell counted while the switching was not running must not fire the moment it runs again
+				this.wallboxInfoList[iWB].PhaseSwitchDelay = 0;
+				return;
+			}
+			this.wallboxInfoList[iWB].PhaseSwitchDelay = phaseDecision.switchDelay;
+			// phase-switch control loop: show the current/target phase and the pending dwell counter
+			this.log.debug(
+				`ChargeManager charger ${iWB} phase: ${this.wallboxInfoList[iWB].EnabledPhases}p now, target ${phaseDecision.targetPhases}p, dwell ${phaseDecision.switchDelay}`,
+			);
+			// the automatic decision is tracked internally and drives the charger via Switch_3Phases;
+			// it must never overwrite the user's manual Settings.Charge3Phase request
+			this.wallboxInfoList[iWB].ManagedCharge3Phase = phaseDecision.targetPhases === 3;
+			if (phaseDecision.targetPhases !== this.wallboxInfoList[iWB].EnabledPhases) {
+				this.log.info(
+					`ChargeManager: switching charger ${iWB} to ${phaseDecision.targetPhases}-phase charging (surplus ${Math.round(decisions[index].availablePower)} W)`,
 				);
-				// the automatic decision is tracked internally and drives the charger via Switch_3Phases;
-				// it must never overwrite the user's manual Settings.Charge3Phase request
-				this.wallboxInfoList[iWB].ManagedCharge3Phase = phaseDecision.targetPhases === 3;
-				if (phaseDecision.targetPhases !== this.wallboxInfoList[iWB].EnabledPhases) {
-					this.log.info(
-						`ChargeManager: switching charger ${iWB} to ${phaseDecision.targetPhases}-phase charging (surplus ${Math.round(decisions[index].availablePower)} W)`,
-					);
-				}
 			}
 		});
 		return plans;

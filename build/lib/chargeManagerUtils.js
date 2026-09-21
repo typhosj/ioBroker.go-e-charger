@@ -11,11 +11,14 @@ exports.updateShutdownDelay = updateShutdownDelay;
 exports.decideChargeManager = decideChargeManager;
 exports.decideChargeManagerFleet = decideChargeManagerFleet;
 exports.decidePhaseSwitch = decidePhaseSwitch;
+exports.seedChargeManagerState = seedChargeManagerState;
+exports.planChargeManagerFleet = planChargeManagerFleet;
 exports.phaseModeToSend = phaseModeToSend;
 exports.resolvePhaseModeWrite = resolvePhaseModeWrite;
 exports.phaseModeOf = phaseModeOf;
 exports.decideIdleRelease = decideIdleRelease;
 exports.isVehicleDisconnected = isVehicleDisconnected;
+exports.withdrawReleaseWithModesOff = withdrawReleaseWithModesOff;
 exports.updateReleaseRejects = updateReleaseRejects;
 exports.holdRejectedRelease = holdRejectedRelease;
 exports.dropUnchangedChargerCommands = dropUnchangedChargerCommands;
@@ -235,6 +238,30 @@ function decidePhaseSwitch(input) {
     }
     return { targetPhases: input.currentPhases, switchDelay };
 }
+function seedChargeManagerState(reportedAllow, reportedAmp, minimum, maximum) {
+    if (reportedAllow !== 1 || !Number.isFinite(reportedAmp) || reportedAmp <= 0) {
+        return { currentAmp: 0, shutdownDelay: 0 };
+    }
+    return { currentAmp: Math.min(Math.max(Math.trunc(reportedAmp), minimum), maximum), shutdownDelay: 0 };
+}
+function planChargeManagerFleet(shared, participants, phaseInputs) {
+    const decisions = decideChargeManagerFleet(shared, participants);
+    const phases = phaseInputs.map((phaseInput, index) => phaseInput
+        ? decidePhaseSwitch({
+            currentPhases: phaseInput.currentPhases,
+            availablePower: decisions[index].availablePower,
+            minimumChargeCurrent: participants[index].minimumChargeCurrent,
+            maximumChargeCurrent: participants[index].maximumChargeCurrent,
+            switchDelay: phaseInput.switchDelay,
+        })
+        : null);
+    const switched = phases.some((phase, index) => phase && phase.targetPhases !== phaseInputs[index]?.currentPhases);
+    if (!switched) {
+        return { decisions, phases };
+    }
+    const switchedParticipants = participants.map((participant, index) => ({ ...participant, phases: phases[index]?.targetPhases || participant.phases }));
+    return { decisions: decideChargeManagerFleet(shared, switchedParticipants), phases };
+}
 function phaseModeToSend(charge3Phase, enabledPhases) {
     if (enabledPhases === (charge3Phase ? 3 : 1)) {
         return null;
@@ -278,6 +305,9 @@ function decideIdleRelease(input) {
 }
 function isVehicleDisconnected(carState) {
     return carState === 1;
+}
+function withdrawReleaseWithModesOff(chargingAllowed, releasedByAdapter) {
+    return releasedByAdapter === true && chargingAllowed === true;
 }
 exports.CAR_STATE_FINISHED = 4;
 exports.RELEASE_RETRY_LIMIT = 30;

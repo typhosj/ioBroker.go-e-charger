@@ -144,6 +144,8 @@ class go_e_charger extends utils.Adapter {
                 ChargeNowSawVehicle: false,
                 Reported: {},
                 RequestedAllow: null,
+                ReleasedByAdapter: false,
+                ChargeManagerRunning: false,
                 ReleaseRejects: 0,
                 CurrentHysteresis: 0,
                 SetOptAmp: 5,
@@ -483,6 +485,7 @@ class go_e_charger extends utils.Adapter {
                 }
                 if (!info.ChargeManager || info.ChargeNOW) {
                     this.resetIdleRelease(iWB);
+                    this.wallboxInfoList[iWB].ChargeManagerRunning = false;
                 }
                 if (info.ChargeNOW) {
                     if ((0, chargeManagerUtils_1.isVehicleDisconnected)(info.CarState)) {
@@ -562,7 +565,7 @@ class go_e_charger extends utils.Adapter {
                 }
                 else {
                     await this.setChargeState(iWB, `ChargeNOW and ChargeManager are both switched off`);
-                    if ((await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.ChargingAllowed`)) == true) {
+                    if ((0, chargeManagerUtils_1.withdrawReleaseWithModesOff)(await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.ChargingAllowed`), this.wallboxInfoList[iWB].ReleasedByAdapter)) {
                         this.wallboxInfoList[iWB].SetAmp = 0;
                         await this.Charge_Config("0", this.wallboxInfoList[iWB].MinAmp, `Deactivate go-eCharger`, iWB);
                     }
@@ -895,6 +898,7 @@ class go_e_charger extends utils.Adapter {
             this.log.warn(`Invalid charging current for charger ${iWB}: ${Ampere} A`);
             return;
         }
+        this.wallboxInfoList[iWB].ReleasedByAdapter = Allow === "1";
         let pending = (0, chargeManagerUtils_1.dropUnchangedChargerCommands)(commands, this.wallboxInfoList[iWB].Reported);
         if ((0, chargeManagerUtils_1.holdRejectedRelease)(this.wallboxInfoList[iWB].ReleaseRejects, this.wallboxInfoList[iWB].CarState)) {
             pending = pending.filter(command => command.parameter === "alw" && command.value === 0);
@@ -941,6 +945,13 @@ class go_e_charger extends utils.Adapter {
         let fleetChargePower = 0;
         for (const iWB of candidates) {
             this.wallboxInfoList[iWB].ChargePower = await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.Charge`);
+            if (!this.wallboxInfoList[iWB].ChargeManagerRunning) {
+                const seed = (0, chargeManagerUtils_1.seedChargeManagerState)(this.wallboxInfoList[iWB].Reported.alw, this.wallboxInfoList[iWB].Reported.amp, Math.min(Math.max(chargeManagerMinCurrent, this.wallboxInfoList[iWB].MinAmp), this.wallboxInfoList[iWB].MaxAmp), this.wallboxInfoList[iWB].MaxAmp);
+                this.wallboxInfoList[iWB].SetAmp = seed.currentAmp;
+                this.wallboxInfoList[iWB].DelayOff = seed.shutdownDelay;
+                this.wallboxInfoList[iWB].PhaseSwitchDelay = 0;
+                this.wallboxInfoList[iWB].ChargeManagerRunning = true;
+            }
             const batteryDecision = (0, chargeManagerUtils_1.evaluateBatteryAvailability)({
                 mode: chargeManagerBatteryMode,
                 batterySoc: batteryState?.val,
@@ -973,7 +984,10 @@ class go_e_charger extends utils.Adapter {
         if (batterySoc !== null) {
             this.log.debug(`Got external state of battery SoC: ${batterySoc}%`);
         }
-        const decisions = (0, chargeManagerUtils_1.decideChargeManagerFleet)({
+        const phaseInputs = served.map(iWB => this.wallboxInfoList[iWB].AutoPhase && this.wallboxInfoList[iWB].HardwareMin3 && !(0, chargeManagerUtils_1.isVehicleDisconnected)(this.wallboxInfoList[iWB].CarState)
+            ? { currentPhases: this.wallboxInfoList[iWB].EnabledPhases, switchDelay: this.wallboxInfoList[iWB].PhaseSwitchDelay }
+            : null);
+        const { decisions, phases: phaseDecisions } = (0, chargeManagerUtils_1.planChargeManagerFleet)({
             solarPower,
             houseConsumption,
             chargerPower: fleetChargePower,
@@ -983,27 +997,22 @@ class go_e_charger extends utils.Adapter {
             batteryMode: chargeManagerBatteryMode,
             reservePower: chargeManagerReservePower,
             maximumBatteryBonus: chargeManagerMaxBatteryBonus,
-        }, participants);
+        }, participants, phaseInputs);
         served.forEach((iWB, index) => {
             plans[iWB] = { decision: decisions[index], batteryReason: "available" };
             const decision = decisions[index];
             const carState = this.wallboxInfoList[iWB].CarState;
             this.log.debug(`ChargeManager charger ${iWB}: surplus ${Math.round(decision.availablePower)} W → optimal ${decision.optimalCurrent ?? 0} A, ramp ${decision.nextState.currentAmp} A, action=${decision.action} (${decision.reason}), car=${carState}`);
-            if (this.wallboxInfoList[iWB].AutoPhase && this.wallboxInfoList[iWB].HardwareMin3 && !(0, chargeManagerUtils_1.isVehicleDisconnected)(this.wallboxInfoList[iWB].CarState)) {
-                const participant = participants[index];
-                const phaseDecision = (0, chargeManagerUtils_1.decidePhaseSwitch)({
-                    currentPhases: this.wallboxInfoList[iWB].EnabledPhases,
-                    availablePower: decisions[index].availablePower,
-                    minimumChargeCurrent: participant.minimumChargeCurrent,
-                    maximumChargeCurrent: participant.maximumChargeCurrent,
-                    switchDelay: this.wallboxInfoList[iWB].PhaseSwitchDelay,
-                });
-                this.wallboxInfoList[iWB].PhaseSwitchDelay = phaseDecision.switchDelay;
-                this.log.debug(`ChargeManager charger ${iWB} phase: ${this.wallboxInfoList[iWB].EnabledPhases}p now, target ${phaseDecision.targetPhases}p, dwell ${phaseDecision.switchDelay}`);
-                this.wallboxInfoList[iWB].ManagedCharge3Phase = phaseDecision.targetPhases === 3;
-                if (phaseDecision.targetPhases !== this.wallboxInfoList[iWB].EnabledPhases) {
-                    this.log.info(`ChargeManager: switching charger ${iWB} to ${phaseDecision.targetPhases}-phase charging (surplus ${Math.round(decisions[index].availablePower)} W)`);
-                }
+            const phaseDecision = phaseDecisions[index];
+            if (!phaseDecision) {
+                this.wallboxInfoList[iWB].PhaseSwitchDelay = 0;
+                return;
+            }
+            this.wallboxInfoList[iWB].PhaseSwitchDelay = phaseDecision.switchDelay;
+            this.log.debug(`ChargeManager charger ${iWB} phase: ${this.wallboxInfoList[iWB].EnabledPhases}p now, target ${phaseDecision.targetPhases}p, dwell ${phaseDecision.switchDelay}`);
+            this.wallboxInfoList[iWB].ManagedCharge3Phase = phaseDecision.targetPhases === 3;
+            if (phaseDecision.targetPhases !== this.wallboxInfoList[iWB].EnabledPhases) {
+                this.log.info(`ChargeManager: switching charger ${iWB} to ${phaseDecision.targetPhases}-phase charging (surplus ${Math.round(decisions[index].availablePower)} W)`);
             }
         });
         return plans;

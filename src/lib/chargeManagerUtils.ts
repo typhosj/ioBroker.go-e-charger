@@ -587,6 +587,80 @@ export function decidePhaseSwitch(input: PhaseSwitchInput): PhaseSwitchDecision 
 }
 
 /**
+ * Controller state for a ChargeManager that takes over a charger - at adapter start, or when it
+ * is switched on after ChargeNOW or manual charging.
+ *
+ * A vehicle that is already charging is taken over at the current it charges with. Starting the
+ * ramp at 0 A instead would count the ramp-up as insufficient surplus and withdraw a release
+ * that was working fine; state carried over from an earlier run is just as wrong, so the
+ * shutdown delay always starts from zero.
+ *
+ * @param reportedAllow Charge release the charger reports (`alw`, 1 = released)
+ * @param reportedAmp Charging current the charger reports (`amp`)
+ * @param minimum Lowest current the ChargeManager may assign to this wallbox
+ * @param maximum Highest current the ChargeManager may assign to this wallbox
+ * @returns The state to start the controller with
+ */
+export function seedChargeManagerState(
+	reportedAllow: number | undefined,
+	reportedAmp: number | undefined,
+	minimum: number,
+	maximum: number,
+): ChargeManagerState {
+	if (reportedAllow !== 1 || !Number.isFinite(reportedAmp) || (reportedAmp as number) <= 0) {
+		return { currentAmp: 0, shutdownDelay: 0 };
+	}
+	return { currentAmp: Math.min(Math.max(Math.trunc(reportedAmp as number), minimum), maximum), shutdownDelay: 0 };
+}
+
+/** Phase-switch inputs of a wallbox with automatic phase switching. */
+export interface FleetPhaseInput {
+	/** Phase count the charger reports (1 or 3; anything else is never switched) */
+	currentPhases: number;
+	/** Consecutive cycles the pending switch condition has already held */
+	switchDelay: number;
+}
+
+/**
+ * Splits the surplus across the fleet and decides the automatic phase switching in one step.
+ *
+ * The phase decision needs the surplus each wallbox is offered, so the fleet is allocated first.
+ * When a wallbox switches phases, the allocation runs again with the new phase count: the switch
+ * reaches the charger in this very cycle, and a current sized for the old count withdrew the
+ * release on top of the switch (three-phase 3394 W is 4 A, below the minimum; one-phase it is
+ * 14 A).
+ *
+ * @param shared Surplus inputs shared by the whole fleet
+ * @param participants Wallboxes in priority order, with their current phase count
+ * @param phaseInputs Per wallbox the phase-switch inputs, or `null` without automatic switching
+ * @returns The charge decisions, and per wallbox the phase decision (`null` without automatic switching)
+ */
+export function planChargeManagerFleet(
+	shared: FleetSurplusInput,
+	participants: FleetParticipant[],
+	phaseInputs: (FleetPhaseInput | null)[],
+): { decisions: FleetChargeDecision[]; phases: (PhaseSwitchDecision | null)[] } {
+	const decisions = decideChargeManagerFleet(shared, participants);
+	const phases = phaseInputs.map((phaseInput, index) =>
+		phaseInput
+			? decidePhaseSwitch({
+					currentPhases: phaseInput.currentPhases,
+					availablePower: decisions[index].availablePower,
+					minimumChargeCurrent: participants[index].minimumChargeCurrent,
+					maximumChargeCurrent: participants[index].maximumChargeCurrent,
+					switchDelay: phaseInput.switchDelay,
+				})
+			: null,
+	);
+	const switched = phases.some((phase, index) => phase && phase.targetPhases !== phaseInputs[index]?.currentPhases);
+	if (!switched) {
+		return { decisions, phases };
+	}
+	const switchedParticipants = participants.map((participant, index) => ({ ...participant, phases: phases[index]?.targetPhases || participant.phases }));
+	return { decisions: decideChargeManagerFleet(shared, switchedParticipants), phases };
+}
+
+/**
  * Returns the go-e phase mode (`psm`: 1 = one phase, 2 = three phases) to send, or `null` when the
  * charger already reports the requested mode. `psm` is a stored setting, so it is not rewritten
  * every cycle.
@@ -705,6 +779,21 @@ export function decideIdleRelease(input: IdleReleaseInput): { withdraw: boolean;
  */
 export function isVehicleDisconnected(carState: number): boolean {
 	return carState === 1;
+}
+
+/**
+ * Whether to withdraw the charge release while ChargeNOW and ChargeManager are both switched off.
+ *
+ * Only a release the adapter gave itself is withdrawn. A release from anywhere else - the go-e
+ * app, the button on the charger, the charger's own default after a restart - belongs to the user,
+ * and withdrawing it every cycle aborted each charge within seconds until the vehicle gave up.
+ *
+ * @param chargingAllowed Charge release the charger reports (`Power.ChargingAllowed`)
+ * @param releasedByAdapter Whether the release was last given by the adapter
+ * @returns `true` only for an active release the adapter gave
+ */
+export function withdrawReleaseWithModesOff(chargingAllowed: unknown, releasedByAdapter: boolean): boolean {
+	return releasedByAdapter === true && chargingAllowed === true;
 }
 
 /** go-e car state for a vehicle that is plugged in and has finished charging */

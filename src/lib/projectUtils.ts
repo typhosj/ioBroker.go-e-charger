@@ -135,6 +135,16 @@ export interface IWallboxInfo {
 	 */
 	RequestedAllow: number | null;
 	/**
+	 * Whether the adapter itself gave the current charge release. Only such a release is withdrawn
+	 * when ChargeNOW and ChargeManager are both switched off; one given elsewhere is left alone.
+	 */
+	ReleasedByAdapter: boolean;
+	/**
+	 * Whether the ChargeManager controlled this charger in the previous cycle. When it takes over,
+	 * its controller state is seeded from the charger instead of carried over from an earlier run.
+	 */
+	ChargeManagerRunning: boolean;
+	/**
 	 * Consecutive cycles the charger reported a charge release other than the requested one
 	 */
 	ReleaseRejects: number;

@@ -30,11 +30,14 @@ import {
 	RELEASE_RETRY_LIMIT,
 	resolveStartChargeCurrent,
 	resolveWallboxCurrentLimits,
+	planChargeManagerFleet,
+	seedChargeManagerState,
 	SHUTDOWN_DELAY_CYCLES,
 	START_CHARGE_CURRENT,
 	stepChargeCurrent,
 	updateReleaseRejects,
 	updateShutdownDelay,
+	withdrawReleaseWithModesOff,
 } from "./lib/chargeManagerUtils";
 
 describe("ChargeManager safety helpers", () => {
@@ -677,6 +680,23 @@ describe("ChargeManager safety helpers", () => {
 		});
 	});
 
+	describe("withdrawReleaseWithModesOff", () => {
+		it("withdraws an active release the adapter gave", () => {
+			assert.equal(withdrawReleaseWithModesOff(true, true), true);
+		});
+
+		it("leaves a release from the app, the button or a charger restart alone", () => {
+			// 2026-09-21: every such release was withdrawn within one cycle until the Zoe gave up
+			assert.equal(withdrawReleaseWithModesOff(true, false), false);
+		});
+
+		it("sends nothing when no release is active or its state is unknown", () => {
+			for (const chargingAllowed of [false, null, undefined, 1, "true", Number.NaN]) {
+				assert.equal(withdrawReleaseWithModesOff(chargingAllowed, true), false, `ChargingAllowed ${String(chargingAllowed)}`);
+			}
+		});
+	});
+
 	describe("updateShutdownDelay", () => {
 		it("counts consecutive low-current cycles", () => {
 			assert.equal(updateShutdownDelay(5, MIN_CHARGE_CURRENT, 4), 5);
@@ -803,6 +823,83 @@ describe("ChargeManager safety helpers", () => {
 				assert.equal(decision.reason, "invalid-input");
 				assert.equal(decision.optimalCurrent, null);
 			}
+		});
+	});
+
+	describe("seedChargeManagerState", () => {
+		it("takes over a running charge at the current the charger reports", () => {
+			// 2026-09-21: taken over at 0 A, the ramp withdrew a release the Zoe was charging on at 10 A
+			assert.deepEqual(seedChargeManagerState(1, 10, MIN_CHARGE_CURRENT, 16), { currentAmp: 10, shutdownDelay: 0 });
+		});
+
+		it("clamps the reported current into the ChargeManager range", () => {
+			assert.equal(seedChargeManagerState(1, 32, MIN_CHARGE_CURRENT, 16).currentAmp, 16);
+			assert.equal(seedChargeManagerState(1, 16, MIN_CHARGE_CURRENT, 16).currentAmp, 16);
+			assert.equal(seedChargeManagerState(1, 3, 8, 16).currentAmp, 8);
+			assert.equal(seedChargeManagerState(1, 10.7, MIN_CHARGE_CURRENT, 16).currentAmp, 10);
+		});
+
+		it("starts from 0 A without an active release or without a valid reading", () => {
+			for (const [allow, amp] of [
+				[0, 10],
+				[undefined, 10],
+				[Number.NaN, 10],
+				[1, undefined],
+				[1, Number.NaN],
+				[1, 0],
+				[1, -5],
+			] as [number | undefined, number | undefined][]) {
+				assert.deepEqual(seedChargeManagerState(allow, amp, MIN_CHARGE_CURRENT, 16), { currentAmp: 0, shutdownDelay: 0 }, `alw ${allow}, amp ${amp}`);
+			}
+		});
+	});
+
+	describe("planChargeManagerFleet", () => {
+		// the 2026-09-21 hand-over: 3394 W surplus, the Zoe charging three-phase at 10 A
+		const shared = {
+			solarPower: 3494,
+			houseConsumption: 0,
+			chargerPower: 0,
+			subtractChargerPower: false,
+			batterySoc: null,
+			minBatterySoc: 70,
+			batteryMode: "disabled" as const,
+			reservePower: 100,
+			maximumBatteryBonus: 2000,
+		};
+		const zoe: FleetParticipant = {
+			phases: 3,
+			minimumChargeCurrent: MIN_CHARGE_CURRENT,
+			maximumChargeCurrent: 16,
+			state: { currentAmp: 10, shutdownDelay: SHUTDOWN_DELAY_CYCLES },
+			claimsPower: true,
+		};
+
+		it("sizes the current for the phase count it switches to in the same cycle", () => {
+			const plan = planChargeManagerFleet(shared, [zoe], [{ currentPhases: 3, switchDelay: PHASE_SWITCH_DELAY_CYCLES }]);
+			assert.equal(plan.phases[0]?.targetPhases, 1);
+			// sized for three phases it is 4 A, and the ramp heads for a withdrawal on top of the switch
+			assert.equal(decideChargeManagerFleet(shared, [zoe])[0].optimalCurrent, 4);
+			assert.equal(plan.decisions[0].optimalCurrent, 14);
+			assert.equal(plan.decisions[0].action, "enable");
+		});
+
+		it("keeps the current phase count while the dwell time runs", () => {
+			const plan = planChargeManagerFleet(shared, [zoe], [{ currentPhases: 3, switchDelay: 0 }]);
+			assert.deepEqual(plan.phases[0], { targetPhases: 3, switchDelay: 1 });
+			assert.deepEqual(plan.decisions, decideChargeManagerFleet(shared, [zoe]));
+		});
+
+		it("leaves wallboxes without automatic phase switching untouched", () => {
+			const plan = planChargeManagerFleet(shared, [zoe], [null]);
+			assert.deepEqual(plan.phases, [null]);
+			assert.deepEqual(plan.decisions, decideChargeManagerFleet(shared, [zoe]));
+		});
+
+		it("does not switch on an unknown phase count", () => {
+			const plan = planChargeManagerFleet(shared, [zoe], [{ currentPhases: 0, switchDelay: PHASE_SWITCH_DELAY_CYCLES }]);
+			assert.deepEqual(plan.phases[0], { targetPhases: 0, switchDelay: 0 });
+			assert.deepEqual(plan.decisions, decideChargeManagerFleet(shared, [zoe]));
 		});
 	});
 
