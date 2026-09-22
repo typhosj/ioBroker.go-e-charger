@@ -600,6 +600,44 @@ describe("ChargeManager safety helpers", () => {
 			assert.equal(stepChargeCurrent(9, 8, 16, 8), 8); // stepping down onto the minimum
 		});
 
+		it("never blocks the last step onto the start current", () => {
+			// 2026-09-22: the target sat at exactly 10 A for hours and the ramp stayed at 9 A
+			assert.equal(stepChargeCurrent(9, START_CHARGE_CURRENT, 16, 6), START_CHARGE_CURRENT);
+			assert.equal(stepChargeCurrent(9, START_CHARGE_CURRENT + 1, 16, 6), START_CHARGE_CURRENT);
+			assert.equal(stepChargeCurrent(8, 9, 16, 6), 8); // below the start the deadband still holds
+			assert.equal(stepChargeCurrent(START_CHARGE_CURRENT, START_CHARGE_CURRENT + 1, 16, 6), START_CHARGE_CURRENT);
+			assert.equal(stepChargeCurrent(START_CHARGE_CURRENT, START_CHARGE_CURRENT - 1, 16, 6), START_CHARGE_CURRENT);
+			assert.equal(stepChargeCurrent(7, 8, 8, 6), 8); // a wallbox capped below 10 A starts at its maximum
+			assert.equal(stepChargeCurrent(Number.NaN, START_CHARGE_CURRENT, 16, 6), 1);
+		});
+
+		it("starts charging when the surplus holds exactly the start current", () => {
+			let state = { currentAmp: 0, shutdownDelay: 0 };
+			let action = "";
+			for (let cycle = 0; cycle < 30; cycle++) {
+				const decision = decideChargeManager({
+					solarPower: START_CHARGE_CURRENT * 230 * 3 + 100,
+					houseConsumption: 0,
+					chargerPower: 0,
+					subtractChargerPower: false,
+					batterySoc: 99,
+					minBatterySoc: 90,
+					batteryMode: "priority",
+					reservePower: 100,
+					maximumBatteryBonus: 0,
+					maximumChargeCurrent: 16,
+					minimumChargeCurrent: 6,
+					phases: 3,
+					state,
+				});
+				assert.equal(decision.optimalCurrent, START_CHARGE_CURRENT);
+				state = decision.nextState;
+				action = decision.action;
+			}
+			assert.equal(action, "enable");
+			assert.equal(state.currentAmp, START_CHARGE_CURRENT);
+		});
+
 		it("recovers an invalid minimum instead of blocking the deadband", () => {
 			assert.equal(stepChargeCurrent(10, 11, 16, Number.NaN), 10);
 			assert.equal(stepChargeCurrent(10, 11, 16, 20), 10); // minimum above the maximum

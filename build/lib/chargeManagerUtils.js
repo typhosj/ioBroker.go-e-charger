@@ -133,7 +133,9 @@ function stepChargeCurrent(current, target, maximum = exports.MAX_CHARGE_CURRENT
     if (gap === 0) {
         return safeCurrent;
     }
-    const atRangeEnd = safeTarget <= safeMinimum || safeTarget === safeMaximum;
+    const start = resolveStartChargeCurrent(safeMinimum, safeMaximum);
+    const reachesStart = safeCurrent < start && safeTarget >= start;
+    const atRangeEnd = safeTarget <= safeMinimum || safeTarget === safeMaximum || reachesStart;
     if (atRangeEnd || Math.abs(gap) >= exports.CURRENT_DEADBAND) {
         return safeCurrent + Math.sign(gap);
     }

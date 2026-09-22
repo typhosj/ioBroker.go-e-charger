@@ -318,8 +318,8 @@ export const CURRENT_DEADBAND = 2;
  * newly calculated target is at least {@link CURRENT_DEADBAND} amperes away.
  *
  * The ends of the usable range are followed exactly regardless of the deadband, or the deadband
- * would make them unreachable: stopping (0 A), ramping up to a raised minimum, and the configured
- * maximum. Inside the range a one-ampere target change is ignored, so the charger settles instead
+ * would make them unreachable: stopping (0 A), ramping up to a raised minimum or to the start
+ * current, and the configured maximum. Inside the range a one-ampere target change is ignored, so the charger settles instead
  * of stepping back and forth every cycle.
  *
  * Known limit: while the target oscillates between the maximum and one ampere below it, the
@@ -342,7 +342,11 @@ export function stepChargeCurrent(current: number, target: number, maximum = MAX
 	if (gap === 0) {
 		return safeCurrent;
 	}
-	const atRangeEnd = safeTarget <= safeMinimum || safeTarget === safeMaximum;
+	// the step onto the start current releases the charge; a target of exactly that current
+	// would otherwise leave the ramp one ampere short of it for good
+	const start = resolveStartChargeCurrent(safeMinimum, safeMaximum);
+	const reachesStart = safeCurrent < start && safeTarget >= start;
+	const atRangeEnd = safeTarget <= safeMinimum || safeTarget === safeMaximum || reachesStart;
 	if (atRangeEnd || Math.abs(gap) >= CURRENT_DEADBAND) {
 		return safeCurrent + Math.sign(gap);
 	}
