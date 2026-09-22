@@ -769,6 +769,29 @@ export function decideIdleRelease(input: IdleReleaseInput): { withdraw: boolean;
 }
 
 /**
+ * Charging power in watts from the API V1 `nrg` array, whose total power (index 11) is given in
+ * units of 10 W.
+ *
+ * Read once per cycle for every charger, so every check sees this cycle's power. ChargeNOW used a
+ * value only the ChargeManager refreshed: 0 W after an adapter restart, which ended a session
+ * drawing 7 kW after five minutes as "vehicle stopped drawing power".
+ *
+ * @param nrg The `nrg` array of the API V1 status
+ * @returns The power in watts, or `NaN` for a missing or malformed reading
+ */
+export function chargePowerFromStatusV1(nrg: unknown): number {
+	if (!Array.isArray(nrg) || nrg.length < 12) {
+		return Number.NaN;
+	}
+	const raw: unknown = nrg[11];
+	if (typeof raw !== "number" && (typeof raw !== "string" || raw.trim() === "")) {
+		return Number.NaN;
+	}
+	const power = Number(raw) * 10;
+	return Number.isFinite(power) ? power : Number.NaN;
+}
+
+/**
  * Whether the charger reports that no vehicle is plugged in (go-e car state 1).
  *
  * Unknown or invalid states (0, NaN, out of range) do not count as "no vehicle", so a failed

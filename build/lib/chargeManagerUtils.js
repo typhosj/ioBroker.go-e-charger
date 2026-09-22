@@ -17,6 +17,7 @@ exports.phaseModeToSend = phaseModeToSend;
 exports.resolvePhaseModeWrite = resolvePhaseModeWrite;
 exports.phaseModeOf = phaseModeOf;
 exports.decideIdleRelease = decideIdleRelease;
+exports.chargePowerFromStatusV1 = chargePowerFromStatusV1;
 exports.isVehicleDisconnected = isVehicleDisconnected;
 exports.withdrawReleaseWithModesOff = withdrawReleaseWithModesOff;
 exports.updateReleaseRejects = updateReleaseRejects;
@@ -302,6 +303,17 @@ function decideIdleRelease(input) {
         return { withdraw: true, nextState: { idleDelay: 0, latched: true } };
     }
     return { withdraw: false, nextState: { idleDelay, latched: false } };
+}
+function chargePowerFromStatusV1(nrg) {
+    if (!Array.isArray(nrg) || nrg.length < 12) {
+        return Number.NaN;
+    }
+    const raw = nrg[11];
+    if (typeof raw !== "number" && (typeof raw !== "string" || raw.trim() === "")) {
+        return Number.NaN;
+    }
+    const power = Number(raw) * 10;
+    return Number.isFinite(power) ? power : Number.NaN;
 }
 function isVehicleDisconnected(carState) {
     return carState === 1;

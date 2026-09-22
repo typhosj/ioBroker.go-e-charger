@@ -2,6 +2,7 @@ import { strict as assert } from "node:assert";
 import {
 	buildChargerCommands,
 	CAR_STATE_FINISHED,
+	chargePowerFromStatusV1,
 	calculateOptimalChargeCurrent,
 	type ChargeManagerControllerInput,
 	decideChargeManager,
@@ -1207,6 +1208,48 @@ describe("ChargeManager safety helpers", () => {
 			// and the gap between retries never grows beyond the interval
 			const gaps = writtenAt.slice(1).map((cycle, i) => cycle - writtenAt[i]);
 			assert.equal(Math.max(...gaps), RELEASE_RETRY_INTERVAL);
+		});
+	});
+
+	describe("chargePowerFromStatusV1", () => {
+		// API V1 nrg of the go-e V4 charging a Renault Zoe on three phases (log of 2026-09-21 18:36)
+		const charging = [233.12, 234.67, 236.84, 2.79, 118, 118, 118, 23, 23, 23, 0, 709, 85.34, 84.88, 84.54, 100];
+
+		it("reads the total power in units of 10 W", () => {
+			assert.equal(chargePowerFromStatusV1(charging), 7090);
+			assert.equal(chargePowerFromStatusV1(charging.map((value, index) => (index === 11 ? "709" : value))), 7090);
+		});
+
+		it("keeps zero and the small negative readings of a stopping vehicle", () => {
+			assert.equal(chargePowerFromStatusV1(charging.map((value, index) => (index === 11 ? 0 : value))), 0);
+			assert.equal(chargePowerFromStatusV1(charging.map((value, index) => (index === 11 ? -34 : value))), -340);
+		});
+
+		it("lets a ChargeNOW session drawing power run past the idle delay", () => {
+			// the regression: ChargeNOW checked a power value only the ChargeManager refreshed
+			let state = { idleDelay: 0, latched: false };
+			for (let cycle = 0; cycle < 40; cycle++) {
+				const decision = decideIdleRelease({
+					releaseActive: true,
+					carState: 2,
+					chargePower: chargePowerFromStatusV1(charging),
+					controllerAction: "enable",
+					delayCycles: 30,
+					state,
+				});
+				assert.equal(decision.withdraw, false);
+				state = decision.nextState;
+			}
+		});
+
+		it("returns NaN for a missing or malformed reading, which never counts as idle", () => {
+			const short = charging.slice(0, 11);
+			for (const nrg of [undefined, null, "709", {}, [], short, charging.map((value, index) => (index === 11 ? "" : value))]) {
+				assert.ok(Number.isNaN(chargePowerFromStatusV1(nrg)), JSON.stringify(nrg));
+			}
+			for (const raw of [null, true, "  ", "abc", Number.NaN, Number.POSITIVE_INFINITY]) {
+				assert.ok(Number.isNaN(chargePowerFromStatusV1(charging.map((value, index) => (index === 11 ? raw : value)))), String(raw));
+			}
 		});
 	});
 

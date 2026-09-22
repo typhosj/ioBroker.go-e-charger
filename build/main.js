@@ -715,6 +715,7 @@ class go_e_charger extends utils.Adapter {
         })
             .catch(error => {
             this.wallboxInfoList[iWB].Reported = {};
+            this.wallboxInfoList[iWB].ChargePower = Number.NaN;
             this.wallboxInfoList[iWB].RequestedAllow = null;
             this.wallboxInfoList[iWB].ReleaseRejects = 0;
             if (error.message && error.message.includes("EHOSTUNREACH")) {
@@ -769,7 +770,8 @@ class go_e_charger extends utils.Adapter {
         void this.projectUtils.checkAndSetValueNumber(`${basePath}.Power.GridPhases`, this.wallboxInfoList[iWB].GridPhases, `No of available grid phases`, "phase", "value");
         this.setWallboxHardwareLimits(iWB, this.combineHardwareMax(Number(status.ama), Number(status.cbl)), 0, basePath);
         void this.projectUtils.checkAndSetValueNumber(`${basePath}.statistics.chargedEnergy`, status.eto / 10, `Totally charged in wallbox lifetime`, "kWh", "value.energy.consumed");
-        void this.projectUtils.checkAndSetValueNumber(`${basePath}.Power.Charge`, status.nrg[11] * 10, `actual charging-power`, "W", "value.power");
+        this.wallboxInfoList[iWB].ChargePower = (0, chargeManagerUtils_1.chargePowerFromStatusV1)(status.nrg);
+        void this.projectUtils.checkAndSetValueNumber(`${basePath}.Power.Charge`, this.wallboxInfoList[iWB].ChargePower, `actual charging-power`, "W", "value.power");
         void this.projectUtils.checkAndSetValueNumber(`${basePath}.Power.MeasuredMaxPhaseCurrent`, Math.max(...status.nrg.slice(4, 7)) / 10, `Measured max. current of grid phases`, "A", "value.current");
         this.wallboxInfoList[iWB].Firmware = status.fwv;
         void this.projectUtils.checkAndSetValue(`${basePath}.info.firmwareVersion`, status.fwv, `Firmware version of charger`, `info.firmware`);

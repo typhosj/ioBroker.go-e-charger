@@ -5,6 +5,7 @@ import {
 	type BatteryAvailabilityReason,
 	type BatteryMode,
 	buildChargerCommands,
+	chargePowerFromStatusV1,
 	type ChargeManagerDecision,
 	decideIdleRelease,
 	planChargeManagerFleet,
@@ -1042,8 +1043,9 @@ class go_e_charger extends utils.Adapter {
 				await this.ParseStatusAPIV1(result, iWB);
 			})
 			.catch(error => {
-				// without a fresh read every command is sent again
+				// without a fresh read every command is sent again, and no check runs on an old power reading
 				this.wallboxInfoList[iWB].Reported = {};
+				this.wallboxInfoList[iWB].ChargePower = Number.NaN;
 				this.wallboxInfoList[iWB].RequestedAllow = null;
 				this.wallboxInfoList[iWB].ReleaseRejects = 0;
 				if (error.message && error.message.includes("EHOSTUNREACH")) {
@@ -1214,7 +1216,14 @@ class go_e_charger extends utils.Adapter {
 			"kWh",
 			"value.energy.consumed",
 		);
-		void this.projectUtils.checkAndSetValueNumber(`${basePath}.Power.Charge`, status.nrg[11] * 10, `actual charging-power`, "W", "value.power");
+		this.wallboxInfoList[iWB].ChargePower = chargePowerFromStatusV1(status.nrg);
+		void this.projectUtils.checkAndSetValueNumber(
+			`${basePath}.Power.Charge`,
+			this.wallboxInfoList[iWB].ChargePower,
+			`actual charging-power`,
+			"W",
+			"value.power",
+		);
 		void this.projectUtils.checkAndSetValueNumber(
 			`${basePath}.Power.MeasuredMaxPhaseCurrent`,
 			Math.max(...status.nrg.slice(4, 7)) / 10,
