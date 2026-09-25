@@ -1799,6 +1799,7 @@ class go_e_charger extends utils.Adapter {
 				upDelayCycles: phaseSwitchDwellCycles(PHASE_SWITCH_UP_DELAY_MS, this.config.cycleTime, info.ForceState),
 				downDelayCycles: phaseSwitchDwellCycles(PHASE_SWITCH_DOWN_DELAY_MS, this.config.cycleTime, info.ForceState),
 				blocked: info.LastPhaseSwitchMs !== null && now - info.LastPhaseSwitchMs < info.PhaseToggleWaitMs,
+				waitingForStart: info.ForceState !== FORCE_STATE_ON,
 			};
 		});
 		const { decisions, phases: phaseDecisions } = planChargeManagerFleet(

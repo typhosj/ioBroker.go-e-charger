@@ -233,13 +233,14 @@ function decidePhaseSwitch(input) {
         !Number.isFinite(input.maximumChargeCurrent)) {
         return { targetPhases: input.currentPhases, switchDelay: 0 };
     }
-    const threePhaseMinPower = input.minimumChargeCurrent * 3 * exports.PHASE_VOLTAGE;
-    const upThreshold = Math.max(input.maximumChargeCurrent * exports.PHASE_VOLTAGE, threePhaseMinPower * exports.PHASE_SWITCH_HYSTERESIS);
+    const floorCurrent = input.waitingForStart ? resolveStartChargeCurrent(input.minimumChargeCurrent, input.maximumChargeCurrent) : input.minimumChargeCurrent;
+    const threePhaseMinPower = floorCurrent * 3 * exports.PHASE_VOLTAGE;
+    const upThreshold = Math.max(input.maximumChargeCurrent * exports.PHASE_VOLTAGE, input.waitingForStart ? threePhaseMinPower : threePhaseMinPower * exports.PHASE_SWITCH_HYSTERESIS);
     let targetPhases = input.currentPhases;
     if (input.currentPhases === 1 && input.availablePower >= upThreshold) {
         targetPhases = 3;
     }
-    else if (input.currentPhases === 3 && input.availablePower < threePhaseMinPower && input.availablePower >= input.minimumChargeCurrent * exports.PHASE_VOLTAGE) {
+    else if (input.currentPhases === 3 && input.availablePower < threePhaseMinPower && input.availablePower >= floorCurrent * exports.PHASE_VOLTAGE) {
         targetPhases = 1;
     }
     if (targetPhases === input.currentPhases) {
@@ -300,6 +301,7 @@ function planChargeManagerFleet(shared, participants, phaseInputs) {
             upDelayCycles: phaseInput.upDelayCycles,
             downDelayCycles: phaseInput.downDelayCycles,
             blocked: phaseInput.blocked,
+            waitingForStart: phaseInput.waitingForStart,
         })
         : null);
     const switched = phases.some((phase, index) => phase && phase.targetPhases !== phaseInputs[index]?.currentPhases);

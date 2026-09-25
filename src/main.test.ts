@@ -958,6 +958,76 @@ describe("ChargeManager safety helpers", () => {
 			assert.deepEqual(plan.phases[0], { targetPhases: 0, switchDelay: 0 });
 			assert.deepEqual(plan.decisions, decideChargeManagerFleet(shared, [zoe]));
 		});
+
+		describe("before the charge has started", () => {
+			// 2026-09-25 12:04: minimum 8 A, 6831 W surplus - above the three-phase minimum of 5520 W,
+			// below the three-phase start of 6900 W, so the ramp stopped at 8 A and never started
+			const waiting: FleetParticipant = {
+				phases: 3,
+				minimumChargeCurrent: 8,
+				maximumChargeCurrent: 16,
+				state: { currentAmp: 8, shutdownDelay: 0 },
+				claimsPower: true,
+			};
+			const surplus = (availablePower: number): typeof shared => ({ ...shared, solarPower: availablePower + shared.reservePower });
+			// held off, the switch is only planned and needs no dwell (phaseSwitchDwellCycles)
+			const idle = { currentPhases: 3, switchDelay: 0, upDelayCycles: 0, downDelayCycles: 0, waitingForStart: true };
+
+			it("switches to one phase when the surplus carries the minimum but not the start on three phases", () => {
+				const day = {
+					solarPower: 6683,
+					houseConsumption: 1552,
+					chargerPower: 0,
+					subtractChargerPower: true,
+					batterySoc: 90,
+					minBatterySoc: 75,
+					batteryMode: "priority" as const,
+					reservePower: 100,
+					maximumBatteryBonus: 3000,
+				};
+				const plan = planChargeManagerFleet(day, [waiting], [idle]);
+				assert.equal(plan.phases[0]?.targetPhases, 1);
+				assert.equal(plan.decisions[0].optimalCurrent, 16);
+				assert.equal(plan.decisions[0].nextState.currentAmp, 9);
+			});
+
+			it("keeps three phases once the surplus carries the three-phase start", () => {
+				assert.equal(planChargeManagerFleet(surplus(6900), [waiting], [idle]).phases[0]?.targetPhases, 3);
+				assert.equal(planChargeManagerFleet(surplus(6899), [waiting], [idle]).phases[0]?.targetPhases, 1);
+			});
+
+			it("stays on three phases when one phase could not start either", () => {
+				assert.equal(planChargeManagerFleet(surplus(2300), [waiting], [idle]).phases[0]?.targetPhases, 1);
+				assert.equal(planChargeManagerFleet(surplus(2299), [waiting], [idle]).phases[0]?.targetPhases, 3);
+			});
+
+			it("switches up to three phases as soon as the surplus carries the three-phase start", () => {
+				const onePhase = { ...idle, currentPhases: 1 };
+				assert.equal(planChargeManagerFleet(surplus(6900), [waiting], [onePhase]).phases[0]?.targetPhases, 3);
+				assert.equal(planChargeManagerFleet(surplus(6899), [waiting], [onePhase]).phases[0]?.targetPhases, 1);
+				// with the band of a running charge, a raised minimum of 12 A would wait for 10350 W
+				const raised = { ...waiting, minimumChargeCurrent: 12 };
+				assert.equal(planChargeManagerFleet(surplus(8280), [raised], [onePhase]).phases[0]?.targetPhases, 3);
+				assert.equal(planChargeManagerFleet(surplus(8279), [raised], [onePhase]).phases[0]?.targetPhases, 1);
+			});
+
+			it("keeps the minimum as the floor while charging", () => {
+				const charging = { ...idle, waitingForStart: false };
+				assert.equal(planChargeManagerFleet(surplus(5520), [waiting], [charging]).phases[0]?.targetPhases, 3);
+				assert.equal(planChargeManagerFleet(surplus(5519), [waiting], [charging]).phases[0]?.targetPhases, 1);
+			});
+
+			it("uses a raised minimum above the start current as the floor", () => {
+				const raised = { ...waiting, minimumChargeCurrent: 12 };
+				assert.equal(planChargeManagerFleet(surplus(8280), [raised], [idle]).phases[0]?.targetPhases, 3);
+				assert.equal(planChargeManagerFleet(surplus(8279), [raised], [idle]).phases[0]?.targetPhases, 1);
+			});
+
+			it("does not switch on an invalid surplus", () => {
+				const plan = planChargeManagerFleet({ ...shared, solarPower: NaN }, [waiting], [idle]);
+				assert.deepEqual(plan.phases[0], { targetPhases: 3, switchDelay: 0 });
+			});
+		});
 	});
 
 	describe("decidePhaseSwitch", () => {
