@@ -252,6 +252,7 @@ If you enjoyed this project – or are just feeling generous – consider buying
 - (typhosj) with ChargeNOW and ChargeManager both switched off, the adapter now only withdraws a charge release it gave itself - a charge started from the go-e app, the button or the charger's own default was aborted within seconds, again and again, until the vehicle gave up (Renault Zoe: "check connections")
 - (typhosj) ChargeManager: when it takes over a charger that is already charging, it now continues at the current the vehicle charges with instead of ramping up from 0 A, and no longer inherits the shutdown delay or phase-switch dwell of an earlier run - switching from ChargeNOW to ChargeManager used to withdraw the release and switch phases in the very first cycle
 - (typhosj) ChargeManager: a cycle that switches the phase count now sizes the charging current for the new phase count, so a switch to one phase no longer withdraws the charge release at the same time
+- (typhosj) ChargeManager: a charger in force state neutral, where it decides by itself and charges any vehicle, is now held off unless the adapter released it - firmware 60.6 comes back from every restart in that state, the go-e app sets it when a setting is saved, and 59.4 and 60.6 set it when a vehicle is unplugged; the next vehicle used to charge at full power from the grid until the shutdown delay ran out. The release the charger reports in that state is no longer taken for one the adapter gave
 
 ### 1.7.0 (2026-09-18)
 
