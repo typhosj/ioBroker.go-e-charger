@@ -15,6 +15,9 @@ exports.chargerPauseMs = chargerPauseMs;
 exports.seedChargeManagerState = seedChargeManagerState;
 exports.releaseReadback = releaseReadback;
 exports.enforceOffState = enforceOffState;
+exports.planningPhases = planningPhases;
+exports.mayWritePhaseSwitch = mayWritePhaseSwitch;
+exports.phaseSwitchDwellCycles = phaseSwitchDwellCycles;
 exports.planChargeManagerFleet = planChargeManagerFleet;
 exports.phaseModeToSend = phaseModeToSend;
 exports.resolvePhaseModeWrite = resolvePhaseModeWrite;
@@ -268,6 +271,15 @@ function releaseReadback(reportedAllow, forceState) {
 }
 function enforceOffState(forceState, releasedByAdapter) {
     return releasedByAdapter !== true && forceState === exports.FORCE_STATE_NEUTRAL;
+}
+function planningPhases(pendingPhases, enabledPhases) {
+    return pendingPhases === 1 || pendingPhases === 3 ? pendingPhases : enabledPhases;
+}
+function mayWritePhaseSwitch(forceState, action) {
+    return forceState === exports.FORCE_STATE_ON && action !== "disable";
+}
+function phaseSwitchDwellCycles(delayMs, cycleTimeMs, forceState) {
+    return forceState === exports.FORCE_STATE_ON ? Math.ceil(delayMs / cycleTimeMs) : 0;
 }
 function planChargeManagerFleet(shared, participants, phaseInputs) {
     const decisions = decideChargeManagerFleet(shared, participants);
