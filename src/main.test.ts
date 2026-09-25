@@ -5,6 +5,7 @@ import {
 	chargePowerFromStatusV1,
 	chargerPauseMs,
 	DEFAULT_PHASE_TOGGLE_WAIT_MS,
+	describeHold,
 	enforceOffState,
 	FORCE_STATE_NEUTRAL,
 	FORCE_STATE_ON,
@@ -1356,6 +1357,32 @@ describe("ChargeManager safety helpers", () => {
 				}
 			}
 			assert.equal(mayWritePhaseSwitch(FORCE_STATE_ON, "disable"), false);
+		});
+	});
+
+	describe("describeHold", () => {
+		it("reports not enough surplus below the minimum current, released or not", () => {
+			// 2026-09-22 21:00-21:50: "ramping up at 0 A" and "not enough" alternated every two minutes
+			for (const released of [false, true]) {
+				assert.equal(describeHold(0, 8, released), "not-enough");
+				assert.equal(describeHold(7, 8, released), "not-enough");
+			}
+		});
+
+		it("ramps up from the minimum current on, or keeps charging a released charger", () => {
+			assert.equal(describeHold(8, 8, false), "ramping");
+			assert.equal(describeHold(16, 8, false), "ramping");
+			assert.equal(describeHold(8, 8, true), "charging");
+		});
+
+		it("reports not enough surplus for unusable inputs", () => {
+			for (const [optimal, minimum] of [
+				[Number.NaN, 8],
+				[16, Number.NaN],
+				[Number.POSITIVE_INFINITY, 8],
+			]) {
+				assert.equal(describeHold(optimal, minimum, false), "not-enough", `${optimal}/${minimum}`);
+			}
 		});
 	});
 

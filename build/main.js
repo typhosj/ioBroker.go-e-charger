@@ -979,7 +979,7 @@ class go_e_charger extends utils.Adapter {
         for (const iWB of candidates) {
             this.wallboxInfoList[iWB].ChargePower = await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.Charge`);
             if (!this.wallboxInfoList[iWB].ChargeManagerRunning) {
-                const seed = (0, chargeManagerUtils_1.seedChargeManagerState)(this.wallboxInfoList[iWB].Reported.alw, this.wallboxInfoList[iWB].Reported.amp, Math.min(Math.max(chargeManagerMinCurrent, this.wallboxInfoList[iWB].MinAmp), this.wallboxInfoList[iWB].MaxAmp), this.wallboxInfoList[iWB].MaxAmp);
+                const seed = (0, chargeManagerUtils_1.seedChargeManagerState)(this.wallboxInfoList[iWB].Reported.alw, this.wallboxInfoList[iWB].Reported.amp, this.chargeManagerMinimum(iWB), this.wallboxInfoList[iWB].MaxAmp);
                 this.wallboxInfoList[iWB].SetAmp = seed.currentAmp;
                 this.wallboxInfoList[iWB].DelayOff = seed.shutdownDelay;
                 this.wallboxInfoList[iWB].PhaseSwitchDelay = 0;
@@ -1009,7 +1009,7 @@ class go_e_charger extends utils.Adapter {
             participants.push({
                 phases,
                 maximumChargeCurrent: this.wallboxInfoList[iWB].MaxAmp,
-                minimumChargeCurrent: Math.min(Math.max(chargeManagerMinCurrent, this.wallboxInfoList[iWB].MinAmp), this.wallboxInfoList[iWB].MaxAmp),
+                minimumChargeCurrent: this.chargeManagerMinimum(iWB),
                 state: { currentAmp: this.wallboxInfoList[iWB].SetAmp, shutdownDelay: this.wallboxInfoList[iWB].DelayOff },
                 claimsPower: carState === 2 || carState === 3,
             });
@@ -1143,9 +1143,17 @@ class go_e_charger extends utils.Adapter {
             await this.Charge_Config("0", this.wallboxInfoList[iWB].MinAmp, `Insufficient surplus`, iWB);
         }
         else {
-            await this.setChargeState(iWB, `Ramping up from PV surplus, at ${this.wallboxInfoList[iWB].SetAmp} A of ${(0, chargeManagerUtils_1.resolveStartChargeCurrent)(this.wallboxInfoList[iWB].MinAmp, this.wallboxInfoList[iWB].MaxAmp)} A needed to start`);
+            const hold = (0, chargeManagerUtils_1.describeHold)(decision.optimalCurrent, this.chargeManagerMinimum(iWB), this.wallboxInfoList[iWB].ReleasedByAdapter);
+            await this.setChargeState(iWB, hold === "not-enough"
+                ? `Not enough PV surplus`
+                : hold === "charging"
+                    ? `Charging from PV surplus`
+                    : `Ramping up from PV surplus, at ${this.wallboxInfoList[iWB].SetAmp} A of ${(0, chargeManagerUtils_1.resolveStartChargeCurrent)(this.wallboxInfoList[iWB].MinAmp, this.wallboxInfoList[iWB].MaxAmp)} A needed to start`);
         }
         return false;
+    }
+    chargeManagerMinimum(iWB) {
+        return Math.min(Math.max(chargeManagerMinCurrent, this.wallboxInfoList[iWB].MinAmp), this.wallboxInfoList[iWB].MaxAmp);
     }
     isLikeEmpty(inputVar) {
         if (inputVar === undefined || inputVar === null) {

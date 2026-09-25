@@ -739,6 +739,25 @@ export function phaseSwitchDwellCycles(delayMs: number, cycleTimeMs: number, for
 	return forceState === FORCE_STATE_ON ? Math.ceil(delayMs / cycleTimeMs) : 0;
 }
 
+/**
+ * What the ChargeManager is doing while it holds the charger as it is (`hold`), for the charge state.
+ *
+ * "Ramping up" only applies when the surplus would carry at least the minimum current; otherwise
+ * the ramp never reaches the start and the state used to flip between "ramping up at 0 A" and
+ * "not enough PV surplus" every two minutes all night.
+ *
+ * @param optimalCurrent Current the surplus would carry
+ * @param minimumCurrent Lowest current the ChargeManager may assign to this wallbox
+ * @param released Whether the charge release the adapter gave is active
+ * @returns `charging` for a running charge, `ramping` towards the start current, or `not-enough`
+ */
+export function describeHold(optimalCurrent: number, minimumCurrent: number, released: boolean): "charging" | "ramping" | "not-enough" {
+	if (!Number.isFinite(optimalCurrent) || !Number.isFinite(minimumCurrent) || optimalCurrent < minimumCurrent) {
+		return "not-enough";
+	}
+	return released ? "charging" : "ramping";
+}
+
 /** Phase-switch inputs of a wallbox with automatic phase switching. */
 export interface FleetPhaseInput {
 	/** Phase count the charger reports (1 or 3; anything else is never switched) */

@@ -18,6 +18,7 @@ exports.enforceOffState = enforceOffState;
 exports.planningPhases = planningPhases;
 exports.mayWritePhaseSwitch = mayWritePhaseSwitch;
 exports.phaseSwitchDwellCycles = phaseSwitchDwellCycles;
+exports.describeHold = describeHold;
 exports.planChargeManagerFleet = planChargeManagerFleet;
 exports.phaseModeToSend = phaseModeToSend;
 exports.resolvePhaseModeWrite = resolvePhaseModeWrite;
@@ -280,6 +281,12 @@ function mayWritePhaseSwitch(forceState, action) {
 }
 function phaseSwitchDwellCycles(delayMs, cycleTimeMs, forceState) {
     return forceState === exports.FORCE_STATE_ON ? Math.ceil(delayMs / cycleTimeMs) : 0;
+}
+function describeHold(optimalCurrent, minimumCurrent, released) {
+    if (!Number.isFinite(optimalCurrent) || !Number.isFinite(minimumCurrent) || optimalCurrent < minimumCurrent) {
+        return "not-enough";
+    }
+    return released ? "charging" : "ramping";
 }
 function planChargeManagerFleet(shared, participants, phaseInputs) {
     const decisions = decideChargeManagerFleet(shared, participants);

@@ -15,6 +15,7 @@ import {
 	DEFAULT_PHASE_TOGGLE_WAIT_MS,
 	PHASE_SWITCH_DOWN_DELAY_MS,
 	PHASE_SWITCH_UP_DELAY_MS,
+	describeHold,
 	enforceOffState,
 	FORCE_STATE_ON,
 	mayWritePhaseSwitch,
@@ -1729,7 +1730,7 @@ class go_e_charger extends utils.Adapter {
 				const seed = seedChargeManagerState(
 					this.wallboxInfoList[iWB].Reported.alw,
 					this.wallboxInfoList[iWB].Reported.amp,
-					Math.min(Math.max(chargeManagerMinCurrent, this.wallboxInfoList[iWB].MinAmp), this.wallboxInfoList[iWB].MaxAmp),
+					this.chargeManagerMinimum(iWB),
 					this.wallboxInfoList[iWB].MaxAmp,
 				);
 				this.wallboxInfoList[iWB].SetAmp = seed.currentAmp;
@@ -1769,7 +1770,7 @@ class go_e_charger extends utils.Adapter {
 			participants.push({
 				phases,
 				maximumChargeCurrent: this.wallboxInfoList[iWB].MaxAmp,
-				minimumChargeCurrent: Math.min(Math.max(chargeManagerMinCurrent, this.wallboxInfoList[iWB].MinAmp), this.wallboxInfoList[iWB].MaxAmp),
+				minimumChargeCurrent: this.chargeManagerMinimum(iWB),
 				state: { currentAmp: this.wallboxInfoList[iWB].SetAmp, shutdownDelay: this.wallboxInfoList[iWB].DelayOff },
 				claimsPower: carState === 2 || carState === 3,
 			});
@@ -1966,13 +1967,29 @@ class go_e_charger extends utils.Adapter {
 			await this.Charge_Config("0", this.wallboxInfoList[iWB].MinAmp, `Insufficient surplus`, iWB);
 		} else {
 			// ramping towards the start current, or waiting out the shutdown delay - nothing is sent
+			const hold = describeHold(decision.optimalCurrent, this.chargeManagerMinimum(iWB), this.wallboxInfoList[iWB].ReleasedByAdapter);
 			await this.setChargeState(
 				iWB,
-				`Ramping up from PV surplus, at ${this.wallboxInfoList[iWB].SetAmp} A of ${resolveStartChargeCurrent(this.wallboxInfoList[iWB].MinAmp, this.wallboxInfoList[iWB].MaxAmp)} A needed to start`,
+				hold === "not-enough"
+					? `Not enough PV surplus`
+					: hold === "charging"
+						? `Charging from PV surplus`
+						: `Ramping up from PV surplus, at ${this.wallboxInfoList[iWB].SetAmp} A of ${resolveStartChargeCurrent(this.wallboxInfoList[iWB].MinAmp, this.wallboxInfoList[iWB].MaxAmp)} A needed to start`,
 			);
 		}
 		return false;
 	} // END Charge_Manager
+
+	/**
+	 * Lowest current the ChargeManager may assign to a wallbox: the configured ChargeManager
+	 * minimum, raised to the wallbox's own minimum and capped at its maximum.
+	 *
+	 * @param iWB - Index of the charger in the configuration list
+	 * @returns The minimum charging current in A
+	 */
+	private chargeManagerMinimum(iWB: number): number {
+		return Math.min(Math.max(chargeManagerMinCurrent, this.wallboxInfoList[iWB].MinAmp), this.wallboxInfoList[iWB].MaxAmp);
+	}
 
 	/**
 	 * Checks whether a given input value is considered "empty-like".
