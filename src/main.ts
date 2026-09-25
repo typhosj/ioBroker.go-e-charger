@@ -11,6 +11,10 @@ import {
 	planChargeManagerFleet,
 	seedChargeManagerState,
 	dropUnchangedChargerCommands,
+	chargerPauseMs,
+	DEFAULT_PHASE_TOGGLE_WAIT_MS,
+	PHASE_SWITCH_DOWN_DELAY_MS,
+	PHASE_SWITCH_UP_DELAY_MS,
 	enforceOffState,
 	releaseReadback,
 	DEFAULT_MAXIMUM_BATTERY_BONUS,
@@ -198,6 +202,8 @@ class go_e_charger extends utils.Adapter {
 				ReleasedByAdapter: false,
 				ChargeManagerRunning: false,
 				ForceState: Number.NaN,
+				PhaseToggleWaitMs: DEFAULT_PHASE_TOGGLE_WAIT_MS,
+				LastPhaseSwitchMs: null,
 				ReleaseRejects: 0,
 				CurrentHysteresis: 0,
 				SetOptAmp: 5,
@@ -1393,7 +1399,7 @@ class go_e_charger extends utils.Adapter {
 	async Read_ChargerAPIV2(iWB: number): Promise<void> {
 		await axiosInstance
 			.get(
-				`http://${this.config.wallBoxList[iWB].ipAddress}/api/status?filter=alw,frc,modelStatus,acu,eto,amp,rbc,rbt,car,pha,fwv,nrg,psm,typ,trx,ast,ama,cbl,mca,rca,rcr,rcd,rc4,rc5,rc6,rc7,rc8,rc9,rc1,rna,rnm,rne,rn4,rn5,rn6,rn7,rn8,rn9,rn1,eca,ecr,ecd,ec4,ec5,ec6,ec7,ec8,ec9,ec1`,
+				`http://${this.config.wallBoxList[iWB].ipAddress}/api/status?filter=alw,frc,modelStatus,mptwt,acu,eto,amp,rbc,rbt,car,pha,fwv,nrg,psm,typ,trx,ast,ama,cbl,mca,rca,rcr,rcd,rc4,rc5,rc6,rc7,rc8,rc9,rc1,rna,rnm,rne,rn4,rn5,rn6,rn7,rn8,rn9,rn1,eca,ecr,ecd,ec4,ec5,ec6,ec7,ec8,ec9,ec1`,
 				{
 					transformResponse: r => r,
 				},
@@ -1425,6 +1431,7 @@ class go_e_charger extends utils.Adapter {
 	 * @param status - The API V2 status object returned by the wallbox.
 	 * @param status.psm - Phase switching mode (1 = single-phase, 2 = three-phase).
 	 * @param status.frc - Force state (0 = neutral, 1 = off, 2 = on).
+	 * @param status.mptwt - Minimum time between two phase switches in milliseconds.
 	 * @param status.typ - Hardware version or type identifier.
 	 * @param status.trx - Transaction: null = none, 0 = without card, otherwise cardIndex + 1 (API V2 equivalent of V1 uby)
 	 * @param status.ast - Access control state
@@ -1467,6 +1474,7 @@ class go_e_charger extends utils.Adapter {
 		status: {
 			psm: number;
 			frc?: number;
+			mptwt?: number;
 			typ: string;
 			trx?: number | null;
 			ast?: string | number;
@@ -1527,6 +1535,7 @@ class go_e_charger extends utils.Adapter {
 		this.log.debug(`got enabled phases for charger ${iWB}: ${this.wallboxInfoList[iWB].EnabledPhases}`);
 		this.wallboxInfoList[iWB].ForceState = typeof status.frc === "number" ? status.frc : Number.NaN;
 		this.wallboxInfoList[iWB].Reported.alw = releaseReadback(this.wallboxInfoList[iWB].Reported.alw, this.wallboxInfoList[iWB].ForceState);
+		this.wallboxInfoList[iWB].PhaseToggleWaitMs = chargerPauseMs(status.mptwt, DEFAULT_PHASE_TOGGLE_WAIT_MS);
 		this.wallboxInfoList[iWB].Hardware = status.typ;
 		void this.projectUtils.checkAndSetValue(`${basePath}.info.hardwareVersion`, status.typ, `Hardware version of charger`, `info.hardware`);
 		// hardware current caps: absolute max (ama) tightened by the cable coding (cbl, 0 = no cable), plus the min charging current (mca)
@@ -1570,6 +1579,7 @@ class go_e_charger extends utils.Adapter {
 			.get(`http://${this.config.wallBoxList[iWB].ipAddress}/api/set?psm=${psm}`, { transformResponse: r => r })
 			.then(response => {
 				//.status == 200
+				this.wallboxInfoList[iWB].LastPhaseSwitchMs = Date.now();
 				this.log.debug(`Sent: PSM=${psm} to charger ${iWB} → Response: ${response.statusText}`);
 			})
 			.catch(error => {
@@ -1736,11 +1746,22 @@ class go_e_charger extends utils.Adapter {
 
 		// automatic one-/three-phase switching (opt-in, gen3+ only); without a vehicle there is
 		// nothing to switch for - every phase switch wakes the charger
-		const phaseInputs = served.map(iWB =>
-			this.wallboxInfoList[iWB].AutoPhase && this.wallboxInfoList[iWB].HardwareMin3 && !isVehicleDisconnected(this.wallboxInfoList[iWB].CarState)
-				? { currentPhases: this.wallboxInfoList[iWB].EnabledPhases, switchDelay: this.wallboxInfoList[iWB].PhaseSwitchDelay }
-				: null,
-		);
+		// every switch costs the charger a pause, so none follows before the charger's own minimum
+		// time between two switches (mptwt) has passed
+		const now = Date.now();
+		const phaseInputs = served.map(iWB => {
+			const info = this.wallboxInfoList[iWB];
+			if (!info.AutoPhase || !info.HardwareMin3 || isVehicleDisconnected(info.CarState)) {
+				return null;
+			}
+			return {
+				currentPhases: info.EnabledPhases,
+				switchDelay: info.PhaseSwitchDelay,
+				upDelayCycles: Math.ceil(PHASE_SWITCH_UP_DELAY_MS / this.config.cycleTime),
+				downDelayCycles: Math.ceil(PHASE_SWITCH_DOWN_DELAY_MS / this.config.cycleTime),
+				blocked: info.LastPhaseSwitchMs !== null && now - info.LastPhaseSwitchMs < info.PhaseToggleWaitMs,
+			};
+		});
 		const { decisions, phases: phaseDecisions } = planChargeManagerFleet(
 			{
 				solarPower,

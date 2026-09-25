@@ -147,6 +147,8 @@ class go_e_charger extends utils.Adapter {
                 ReleasedByAdapter: false,
                 ChargeManagerRunning: false,
                 ForceState: Number.NaN,
+                PhaseToggleWaitMs: chargeManagerUtils_1.DEFAULT_PHASE_TOGGLE_WAIT_MS,
+                LastPhaseSwitchMs: null,
                 ReleaseRejects: 0,
                 CurrentHysteresis: 0,
                 SetOptAmp: 5,
@@ -824,7 +826,7 @@ class go_e_charger extends utils.Adapter {
     }
     async Read_ChargerAPIV2(iWB) {
         await axiosInstance
-            .get(`http://${this.config.wallBoxList[iWB].ipAddress}/api/status?filter=alw,frc,modelStatus,acu,eto,amp,rbc,rbt,car,pha,fwv,nrg,psm,typ,trx,ast,ama,cbl,mca,rca,rcr,rcd,rc4,rc5,rc6,rc7,rc8,rc9,rc1,rna,rnm,rne,rn4,rn5,rn6,rn7,rn8,rn9,rn1,eca,ecr,ecd,ec4,ec5,ec6,ec7,ec8,ec9,ec1`, {
+            .get(`http://${this.config.wallBoxList[iWB].ipAddress}/api/status?filter=alw,frc,modelStatus,mptwt,acu,eto,amp,rbc,rbt,car,pha,fwv,nrg,psm,typ,trx,ast,ama,cbl,mca,rca,rcr,rcd,rc4,rc5,rc6,rc7,rc8,rc9,rc1,rna,rnm,rne,rn4,rn5,rn6,rn7,rn8,rn9,rn1,eca,ecr,ecd,ec4,ec5,ec6,ec7,ec8,ec9,ec1`, {
             transformResponse: r => r,
         })
             .then(async (response) => {
@@ -859,6 +861,7 @@ class go_e_charger extends utils.Adapter {
         this.log.debug(`got enabled phases for charger ${iWB}: ${this.wallboxInfoList[iWB].EnabledPhases}`);
         this.wallboxInfoList[iWB].ForceState = typeof status.frc === "number" ? status.frc : Number.NaN;
         this.wallboxInfoList[iWB].Reported.alw = (0, chargeManagerUtils_1.releaseReadback)(this.wallboxInfoList[iWB].Reported.alw, this.wallboxInfoList[iWB].ForceState);
+        this.wallboxInfoList[iWB].PhaseToggleWaitMs = (0, chargeManagerUtils_1.chargerPauseMs)(status.mptwt, chargeManagerUtils_1.DEFAULT_PHASE_TOGGLE_WAIT_MS);
         this.wallboxInfoList[iWB].Hardware = status.typ;
         void this.projectUtils.checkAndSetValue(`${basePath}.info.hardwareVersion`, status.typ, `Hardware version of charger`, `info.hardware`);
         this.setWallboxHardwareLimits(iWB, this.combineHardwareMax(Number(status.ama), Number(status.cbl)), Number(status.mca), basePath);
@@ -886,6 +889,7 @@ class go_e_charger extends utils.Adapter {
         await axiosInstance
             .get(`http://${this.config.wallBoxList[iWB].ipAddress}/api/set?psm=${psm}`, { transformResponse: r => r })
             .then(response => {
+            this.wallboxInfoList[iWB].LastPhaseSwitchMs = Date.now();
             this.log.debug(`Sent: PSM=${psm} to charger ${iWB} → Response: ${response.statusText}`);
         })
             .catch(error => {
@@ -995,9 +999,20 @@ class go_e_charger extends utils.Adapter {
         if (batterySoc !== null) {
             this.log.debug(`Got external state of battery SoC: ${batterySoc}%`);
         }
-        const phaseInputs = served.map(iWB => this.wallboxInfoList[iWB].AutoPhase && this.wallboxInfoList[iWB].HardwareMin3 && !(0, chargeManagerUtils_1.isVehicleDisconnected)(this.wallboxInfoList[iWB].CarState)
-            ? { currentPhases: this.wallboxInfoList[iWB].EnabledPhases, switchDelay: this.wallboxInfoList[iWB].PhaseSwitchDelay }
-            : null);
+        const now = Date.now();
+        const phaseInputs = served.map(iWB => {
+            const info = this.wallboxInfoList[iWB];
+            if (!info.AutoPhase || !info.HardwareMin3 || (0, chargeManagerUtils_1.isVehicleDisconnected)(info.CarState)) {
+                return null;
+            }
+            return {
+                currentPhases: info.EnabledPhases,
+                switchDelay: info.PhaseSwitchDelay,
+                upDelayCycles: Math.ceil(chargeManagerUtils_1.PHASE_SWITCH_UP_DELAY_MS / this.config.cycleTime),
+                downDelayCycles: Math.ceil(chargeManagerUtils_1.PHASE_SWITCH_DOWN_DELAY_MS / this.config.cycleTime),
+                blocked: info.LastPhaseSwitchMs !== null && now - info.LastPhaseSwitchMs < info.PhaseToggleWaitMs,
+            };
+        });
         const { decisions, phases: phaseDecisions } = (0, chargeManagerUtils_1.planChargeManagerFleet)({
             solarPower,
             houseConsumption,

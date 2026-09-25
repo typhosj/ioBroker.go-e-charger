@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RELEASE_RETRY_INTERVAL = exports.RELEASE_RETRY_LIMIT = exports.CAR_STATE_FINISHED = exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.FORCE_STATE_ON = exports.FORCE_STATE_NEUTRAL = exports.CURRENT_DEADBAND = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
+exports.RELEASE_RETRY_INTERVAL = exports.RELEASE_RETRY_LIMIT = exports.CAR_STATE_FINISHED = exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.FORCE_STATE_ON = exports.FORCE_STATE_NEUTRAL = exports.DEFAULT_PHASE_TOGGLE_WAIT_MS = exports.CURRENT_DEADBAND = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DOWN_DELAY_MS = exports.PHASE_SWITCH_UP_DELAY_MS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
 exports.resolveWallboxCurrentLimits = resolveWallboxCurrentLimits;
 exports.evaluateBatteryAvailability = evaluateBatteryAvailability;
 exports.calculateAvailableSurplusPower = calculateAvailableSurplusPower;
@@ -11,6 +11,7 @@ exports.updateShutdownDelay = updateShutdownDelay;
 exports.decideChargeManager = decideChargeManager;
 exports.decideChargeManagerFleet = decideChargeManagerFleet;
 exports.decidePhaseSwitch = decidePhaseSwitch;
+exports.chargerPauseMs = chargerPauseMs;
 exports.seedChargeManagerState = seedChargeManagerState;
 exports.releaseReadback = releaseReadback;
 exports.enforceOffState = enforceOffState;
@@ -35,6 +36,8 @@ exports.DEFAULT_RESERVE_POWER = 100;
 exports.DEFAULT_MAXIMUM_BATTERY_BONUS = 2000;
 exports.PHASE_VOLTAGE = 230;
 exports.PHASE_SWITCH_DELAY_CYCLES = 12;
+exports.PHASE_SWITCH_UP_DELAY_MS = 60 * 1000;
+exports.PHASE_SWITCH_DOWN_DELAY_MS = 3 * 60 * 1000;
 exports.PHASE_SWITCH_HYSTERESIS = 1.25;
 function resolveWallboxCurrentLimits(input) {
     const isUsable = (value) => typeof value === "number" && Number.isFinite(value) && value > 0;
@@ -219,7 +222,8 @@ function decideChargeManagerFleet(shared, participants) {
     });
 }
 function decidePhaseSwitch(input) {
-    if ((input.currentPhases !== 1 && input.currentPhases !== 3) ||
+    if (input.blocked === true ||
+        (input.currentPhases !== 1 && input.currentPhases !== 3) ||
         !Number.isFinite(input.availablePower) ||
         !Number.isFinite(input.minimumChargeCurrent) ||
         !Number.isFinite(input.maximumChargeCurrent)) {
@@ -231,17 +235,25 @@ function decidePhaseSwitch(input) {
     if (input.currentPhases === 1 && input.availablePower >= upThreshold) {
         targetPhases = 3;
     }
-    else if (input.currentPhases === 3 && input.availablePower < threePhaseMinPower) {
+    else if (input.currentPhases === 3 && input.availablePower < threePhaseMinPower && input.availablePower >= input.minimumChargeCurrent * exports.PHASE_VOLTAGE) {
         targetPhases = 1;
     }
     if (targetPhases === input.currentPhases) {
         return { targetPhases: input.currentPhases, switchDelay: 0 };
     }
+    const delayCycles = validDelayCycles(targetPhases === 3 ? input.upDelayCycles : input.downDelayCycles);
     const switchDelay = input.switchDelay + 1;
-    if (switchDelay > exports.PHASE_SWITCH_DELAY_CYCLES) {
+    if (switchDelay > delayCycles) {
         return { targetPhases, switchDelay: 0 };
     }
     return { targetPhases: input.currentPhases, switchDelay };
+}
+function validDelayCycles(cycles) {
+    return cycles !== undefined && Number.isFinite(cycles) && cycles >= 0 ? Math.trunc(cycles) : exports.PHASE_SWITCH_DELAY_CYCLES;
+}
+exports.DEFAULT_PHASE_TOGGLE_WAIT_MS = 10 * 60 * 1000;
+function chargerPauseMs(value, fallback) {
+    return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
 }
 function seedChargeManagerState(reportedAllow, reportedAmp, minimum, maximum) {
     if (reportedAllow !== 1 || !Number.isFinite(reportedAmp) || reportedAmp <= 0) {
@@ -266,6 +278,9 @@ function planChargeManagerFleet(shared, participants, phaseInputs) {
             minimumChargeCurrent: participants[index].minimumChargeCurrent,
             maximumChargeCurrent: participants[index].maximumChargeCurrent,
             switchDelay: phaseInput.switchDelay,
+            upDelayCycles: phaseInput.upDelayCycles,
+            downDelayCycles: phaseInput.downDelayCycles,
+            blocked: phaseInput.blocked,
         })
         : null);
     const switched = phases.some((phase, index) => phase && phase.targetPhases !== phaseInputs[index]?.currentPhases);
