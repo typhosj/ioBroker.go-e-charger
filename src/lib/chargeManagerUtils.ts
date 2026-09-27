@@ -156,6 +156,8 @@ export interface ChargeManagerControllerInput extends ChargeCalculationInput {
 	minimumChargeCurrent: number;
 	/** Internal state from the previous control cycle */
 	state: ChargeManagerState;
+	/** The charger reports the charge release (`frc` 2), so the charge is running or about to */
+	released?: boolean;
 }
 
 /** Transport action requested by the ChargeManager controller. */
@@ -380,7 +382,8 @@ export function updateShutdownDelay(current: number, minimum: number, previousDe
  *
  * The function intentionally preserves the existing controller behavior:
  * current changes by at most 1 A per cycle, charging starts at 10 A, and an
- * insufficient-surplus shutdown happens after 12 completed delay cycles.
+ * insufficient-surplus shutdown happens after 12 completed delay cycles. Once the charger
+ * reports the release, every current from the minimum up is written.
  *
  * @param input Current measurements and previous controller state
  * @returns Requested transport action and state for the next cycle
@@ -409,7 +412,9 @@ export function decideChargeManager(input: ChargeManagerControllerInput): Charge
 		input.minimumChargeCurrent > START_CHARGE_CURRENT && optimalCurrent >= input.minimumChargeCurrent && currentAmp < input.minimumChargeCurrent;
 	let shutdownDelay = isRampingToRaisedMinimum ? 0 : updateShutdownDelay(currentAmp, input.minimumChargeCurrent, input.state.shutdownDelay);
 
-	if (currentAmp >= startChargeCurrent) {
+	// the start current only guards the release; with the start as the floor a running charge kept
+	// the current written last while the ramp went down to the minimum (2026-09-26 17:50)
+	if (currentAmp >= (input.released === true ? input.minimumChargeCurrent : startChargeCurrent)) {
 		return {
 			action: "enable",
 			reason: "charging-current",
@@ -461,6 +466,8 @@ export interface FleetParticipant {
 	 * so it never starves a wallbox that has a car waiting.
 	 */
 	claimsPower: boolean;
+	/** The charger reports the charge release (`frc` 2) */
+	released?: boolean;
 }
 
 /** Shared measurements for one fleet-wide ChargeManager cycle; the per-wallbox parts live in {@link FleetParticipant}. */
@@ -504,6 +511,7 @@ export function decideChargeManagerFleet(shared: FleetSurplusInput, participants
 			minimumChargeCurrent: participant.minimumChargeCurrent,
 			phases: participant.phases,
 			state: participant.state,
+			released: participant.released,
 		});
 		// the raw surplus power offered to this wallbox drives its one-/three-phase decision
 		const availablePower = calculateAvailableSurplusPower(surplus) ?? 0;

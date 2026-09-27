@@ -468,6 +468,44 @@ describe("ChargeManager safety helpers", () => {
 			});
 		}
 
+		describe("while the charger reports the charge release", () => {
+			// 2026-09-26 17:50: 8-16 A, the ramp at 8 A for 3.5 minutes while the charger stayed at the
+			// 10 A written last - the start hysteresis also froze the current of the running charge
+			const released = (targetCurrent: number, currentAmp = targetCurrent): ChargeManagerControllerInput => ({
+				...inputForTarget(targetCurrent, currentAmp),
+				minimumChargeCurrent: 8,
+				maximumChargeCurrent: 16,
+				released: true,
+			});
+
+			it("writes every current from the minimum up", () => {
+				for (const current of [8, 9]) {
+					const decision = decideChargeManager(released(current));
+					assert.equal(decision.action, "enable", `${current} A`);
+					assert.deepEqual(decision.nextState, { currentAmp: current, shutdownDelay: 0 });
+				}
+			});
+
+			it("follows a falling surplus down to the minimum", () => {
+				assert.equal(decideChargeManager(released(8, 10)).nextState.currentAmp, 9);
+				assert.equal(decideChargeManager(released(8, 10)).action, "enable");
+				assert.equal(decideChargeManager(released(8, 9)).action, "enable");
+			});
+
+			it("still waits out the shutdown delay below the minimum", () => {
+				const decision = decideChargeManager(released(7));
+				assert.equal(decision.action, "hold");
+				assert.equal(decision.reason, "shutdown-delay");
+			});
+
+			it("keeps the start hysteresis before the release", () => {
+				for (const current of [8, 9]) {
+					assert.equal(decideChargeManager({ ...released(current), released: false }).action, "hold", `${current} A`);
+				}
+				assert.equal(decideChargeManager({ ...released(10), released: false }).action, "enable");
+			});
+		});
+
 		it("starts charging when the current ramp reaches 10 A", () => {
 			const decision = decideChargeManager(inputForTarget(MAX_CHARGE_CURRENT, START_CHARGE_CURRENT - 1));
 
@@ -1077,6 +1115,13 @@ describe("ChargeManager safety helpers", () => {
 				const plan = planChargeManagerFleet(surplus(5109), [charging], [{ ...dwelling, blocked: true }]);
 				assert.equal(plan.decisions[0].action, "disable");
 				assert.equal(plan.phases[0]?.targetPhases, 3);
+			});
+
+			it("writes the minimum on one phase right away once the charger reports the release", () => {
+				const plan = planChargeManagerFleet(surplus(5109), [{ ...charging, released: true }], [dwelling]);
+				assert.equal(plan.phases[0]?.targetPhases, 1);
+				assert.equal(plan.decisions[0].action, "enable");
+				assert.equal(plan.decisions[0].nextState.currentAmp, 8);
 			});
 
 			it("does not switch for a stop caused by invalid limits", () => {

@@ -1774,6 +1774,7 @@ class go_e_charger extends utils.Adapter {
 				minimumChargeCurrent: this.chargeManagerMinimum(iWB),
 				state: { currentAmp: this.wallboxInfoList[iWB].SetAmp, shutdownDelay: this.wallboxInfoList[iWB].DelayOff },
 				claimsPower: carState === 2 || carState === 3,
+				released: info.ForceState === FORCE_STATE_ON,
 			});
 			served.push(iWB);
 			// the whole fleet hides inside the household consumption, so the whole fleet is added back
