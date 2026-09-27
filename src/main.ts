@@ -1604,6 +1604,7 @@ class go_e_charger extends utils.Adapter {
 			.then(response => {
 				//.status == 200
 				this.wallboxInfoList[iWB].LastPhaseSwitchMs = Date.now();
+				this.log.info(`Charger ${iWB}: switched to ${Charge3Phase ? 3 : 1}-phase charging`);
 				this.log.debug(`Sent: PSM=${psm} to charger ${iWB} → Response: ${response.statusText}`);
 			})
 			.catch(error => {
@@ -1849,7 +1850,9 @@ class go_e_charger extends utils.Adapter {
 			info.PendingPhases = phaseDecision.targetPhases !== info.EnabledPhases ? phaseDecision.targetPhases : null;
 			if (phaseDecision.targetPhases !== wasPlanned) {
 				const surplus = Math.round(decisions[index].availablePower);
-				this.log.info(
+				// while held off the plan follows the surplus without a dwell and can change every cycle,
+				// so only the switch actually written is logged as info (Switch_3Phases)
+				this.log.debug(
 					info.ForceState === FORCE_STATE_ON
 						? `ChargeManager: switching charger ${iWB} to ${phaseDecision.targetPhases}-phase charging (surplus ${surplus} W)`
 						: `ChargeManager: charger ${iWB} will start with ${phaseDecision.targetPhases}-phase charging (surplus ${surplus} W) - the switch waits for the charge release`,

@@ -258,6 +258,7 @@ If you enjoyed this project – or are just feeling generous – consider buying
 - (typhosj) ChargeManager: the charge state no longer says "ramping up" when the surplus does not even carry the minimum current - at night it flipped between "ramping up at 0 A" and "not enough PV surplus" every two minutes, with a log line each time
 - (typhosj) ChargeManager: before a charge starts, the automatic phase switching now plans with the start current (10 A) instead of the minimum current - a surplus between the three-phase minimum and the three-phase start (5520 to 6900 W with 8-16 A) kept the charger on three phases, where it never started, although one phase could have charged at full current
 - (typhosj) ChargeManager: a three-phase charge whose surplus no longer carries three phases but still carries one now switches down to one phase instead of being stopped - the shutdown delay ran out before the 3-minute down dwell, so the charge stopped and restarted on one phase instead
+- (typhosj) the info log now reports a phase switch when it is written to the charger; the phase count planned while the charger is held off is only logged at debug level, because it follows the surplus without a dwell and flipped back and forth for hours with a full vehicle connected
 
 ### 1.7.0 (2026-09-18)
 
