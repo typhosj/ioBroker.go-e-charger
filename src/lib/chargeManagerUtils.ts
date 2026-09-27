@@ -796,6 +796,9 @@ export interface FleetPhaseInput {
  * release on top of the switch (three-phase 3394 W is 4 A, below the minimum; one-phase it is
  * 14 A).
  *
+ * A wallbox whose shutdown delay runs out while one phase could carry its charge switches down at
+ * once instead of stopping: the switch costs the charge a short pause, the stop all of it.
+ *
  * @param shared Surplus inputs shared by the whole fleet
  * @param participants Wallboxes in priority order, with their current phase count
  * @param phaseInputs Per wallbox the phase-switch inputs, or `null` without automatic switching
@@ -816,7 +819,9 @@ export function planChargeManagerFleet(
 					maximumChargeCurrent: participants[index].maximumChargeCurrent,
 					switchDelay: phaseInput.switchDelay,
 					upDelayCycles: phaseInput.upDelayCycles,
-					downDelayCycles: phaseInput.downDelayCycles,
+					// the shutdown delay runs out before the down dwell does, so a charge one phase could
+					// carry was stopped instead of switched (2026-09-26 12:22:43)
+					downDelayCycles: decisions[index].reason === "insufficient-surplus" ? 0 : phaseInput.downDelayCycles,
 					blocked: phaseInput.blocked,
 					waitingForStart: phaseInput.waitingForStart,
 				})

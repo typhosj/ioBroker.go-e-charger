@@ -299,7 +299,7 @@ function planChargeManagerFleet(shared, participants, phaseInputs) {
             maximumChargeCurrent: participants[index].maximumChargeCurrent,
             switchDelay: phaseInput.switchDelay,
             upDelayCycles: phaseInput.upDelayCycles,
-            downDelayCycles: phaseInput.downDelayCycles,
+            downDelayCycles: decisions[index].reason === "insufficient-surplus" ? 0 : phaseInput.downDelayCycles,
             blocked: phaseInput.blocked,
             waitingForStart: phaseInput.waitingForStart,
         })

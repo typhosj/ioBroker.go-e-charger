@@ -1028,6 +1028,64 @@ describe("ChargeManager safety helpers", () => {
 				assert.deepEqual(plan.phases[0], { targetPhases: 3, switchDelay: 0 });
 			});
 		});
+
+		describe("when the shutdown delay runs out during a three-phase charge", () => {
+			// 2026-09-26 12:22:43: 8-16 A, three phases, 5109 W - the shutdown withdrew the release
+			// with the three-minute down dwell at 8 of 18 cycles, and one phase restarted 40 s later
+			const charging: FleetParticipant = {
+				phases: 3,
+				minimumChargeCurrent: 8,
+				maximumChargeCurrent: 16,
+				state: { currentAmp: 7, shutdownDelay: SHUTDOWN_DELAY_CYCLES },
+				claimsPower: true,
+			};
+			const surplus = (availablePower: number): typeof shared => ({ ...shared, solarPower: availablePower + shared.reservePower });
+			const dwelling = { currentPhases: 3, switchDelay: 7, upDelayCycles: 6, downDelayCycles: 18, waitingForStart: false };
+
+			it("switches down to one phase instead of stopping the charge", () => {
+				assert.equal(decideChargeManagerFleet(surplus(5109), [charging])[0].action, "disable");
+				const plan = planChargeManagerFleet(surplus(5109), [charging], [dwelling]);
+				assert.deepEqual(plan.phases[0], { targetPhases: 1, switchDelay: 0 });
+				assert.equal(plan.decisions[0].action, "hold");
+				assert.deepEqual(plan.decisions[0].nextState, { currentAmp: 8, shutdownDelay: 0 });
+			});
+
+			it("never stops a charge that one phase could carry, however long the down dwell is", () => {
+				let state = { currentAmp: 10, shutdownDelay: 0 };
+				let switchDelay = 0;
+				for (let cycle = 1; ; cycle++) {
+					const plan = planChargeManagerFleet(surplus(5109), [{ ...charging, state }], [{ ...dwelling, switchDelay }]);
+					assert.notEqual(plan.decisions[0].action, "disable", `stopped in cycle ${cycle}`);
+					if (plan.phases[0]?.targetPhases === 1) {
+						break;
+					}
+					state = plan.decisions[0].nextState;
+					switchDelay = plan.phases[0]?.switchDelay ?? 0;
+				}
+			});
+
+			it("still stops when one phase could not carry the minimum either", () => {
+				const tooLittle = planChargeManagerFleet(surplus(8 * PHASE_VOLTAGE - 1), [charging], [dwelling]);
+				assert.equal(tooLittle.decisions[0].action, "disable");
+				assert.equal(tooLittle.phases[0]?.targetPhases, 3);
+				const enough = planChargeManagerFleet(surplus(8 * PHASE_VOLTAGE), [charging], [dwelling]);
+				assert.equal(enough.decisions[0].action, "hold");
+				assert.equal(enough.phases[0]?.targetPhases, 1);
+			});
+
+			it("still stops while the charger's wait after the last switch runs", () => {
+				const plan = planChargeManagerFleet(surplus(5109), [charging], [{ ...dwelling, blocked: true }]);
+				assert.equal(plan.decisions[0].action, "disable");
+				assert.equal(plan.phases[0]?.targetPhases, 3);
+			});
+
+			it("does not switch for a stop caused by invalid limits", () => {
+				const invalid = { ...charging, minimumChargeCurrent: 20 };
+				const plan = planChargeManagerFleet(surplus(5109), [invalid], [dwelling]);
+				assert.equal(plan.decisions[0].reason, "invalid-input");
+				assert.equal(plan.phases[0]?.targetPhases, 3);
+			});
+		});
 	});
 
 	describe("decidePhaseSwitch", () => {
