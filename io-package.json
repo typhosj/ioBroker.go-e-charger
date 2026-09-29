@@ -172,6 +172,7 @@
     "StateHomeSolarPower": "",
     "StateHomePowerConsumption": "",
     "SubtractSelfConsumption": true,
+    "stateHomeGridImport": "",
     "chargeManagerReservePower": 100,
     "chargeManagerMaxBatteryBonus": 2000,
     "chargeManagerMinCurrent": 6,

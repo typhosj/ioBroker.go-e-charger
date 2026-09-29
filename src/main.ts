@@ -45,6 +45,9 @@ import {
 	START_CHARGE_CURRENT,
 	type TotalCurrentAllocation,
 	type TotalCurrentParticipant,
+	PHASE_VOLTAGE,
+	type SupplyLimitState,
+	updateSupplyLimit,
 } from "./lib/chargeManagerUtils";
 import { ProjectUtils, type IWallboxInfo } from "./lib/projectUtils";
 
@@ -73,6 +76,8 @@ let maxAmpTotal = 0;
 let chargeManagerBatteryMode: BatteryMode = "priority";
 let chargeManagerBatterySocHysteresis = 0;
 let chargeManagerBatterySocMaxAgeSeconds = 0;
+// learned supply limit of the installation, see updateSupplyLimit; lives in memory only
+let supplyLimitState: SupplyLimitState = { limit: null, importCycles: 0 };
 
 class go_e_charger extends utils.Adapter {
 	private projectUtils = new ProjectUtils(this);
@@ -1707,6 +1712,11 @@ class go_e_charger extends utils.Adapter {
 		const plans: (WallboxChargePlan | undefined)[] = new Array(this.config.wallBoxList.length).fill(undefined);
 		const candidates = [...this.config.wallBoxList.keys()].filter(iWB => this.wallboxInfoList[iWB].ChargeManager && !this.wallboxInfoList[iWB].ChargeNOW);
 		if (!candidates.length) {
+			// a limit learned for an earlier charge would only throttle the next start
+			if (supplyLimitState.limit !== null) {
+				this.log.info(`ChargeManager: supply limit released`);
+			}
+			supplyLimitState = { limit: null, importCycles: 0 };
 			return plans;
 		}
 
@@ -1785,6 +1795,30 @@ class go_e_charger extends utils.Adapter {
 			this.log.debug(`Got external state of battery SoC: ${batterySoc}%`);
 		}
 
+		// the installation may deliver less than the calculated surplus (inverter ceiling, battery
+		// discharge limit, empty battery); the grid import shows it, see updateSupplyLimit
+		if (this.config.stateHomeGridImport) {
+			const gridImport = await this.projectUtils.asyncGetForeignStateVal(this.config.stateHomeGridImport);
+			this.log.debug(`Got external state of grid import: ${gridImport} W`);
+			const update = updateSupplyLimit(supplyLimitState, {
+				gridImport,
+				houseConsumption,
+				chargerPower: fleetChargePower,
+				subtractChargerPower: this.config.subtractSelfConsumption,
+				reservePower: chargeManagerReservePower,
+				maximumFleetPower: served.reduce((sum, iWB) => sum + this.wallboxInfoList[iWB].MaxAmp * PHASE_VOLTAGE * 3, 0),
+				cycleTimeMs: this.config.cycleTime,
+			});
+			supplyLimitState = update.state;
+			if (update.event === "created") {
+				this.log.info(
+					`ChargeManager: grid import of ${Math.round(Number(gridImport))} W while charging - limiting the supply to ${Math.round(update.state.limit ?? 0)} W`,
+				);
+			} else if (update.event === "released") {
+				this.log.info(`ChargeManager: supply limit released`);
+			}
+		}
+
 		// automatic one-/three-phase switching (opt-in, gen3+ only); without a vehicle there is
 		// nothing to switch for - every phase switch wakes the charger
 		// every switch costs the charger a pause, so none follows before the charger's own minimum
@@ -1815,6 +1849,7 @@ class go_e_charger extends utils.Adapter {
 				batteryMode: chargeManagerBatteryMode,
 				reservePower: chargeManagerReservePower,
 				maximumBatteryBonus: chargeManagerMaxBatteryBonus,
+				supplyLimit: supplyLimitState.limit,
 			},
 			participants,
 			phaseInputs,
@@ -1826,8 +1861,10 @@ class go_e_charger extends utils.Adapter {
 			// surplus-sharing control loop: one concise line per served charger, in priority order
 			const decision = decisions[index];
 			const carState = this.wallboxInfoList[iWB].CarState;
+			const limitNote =
+				supplyLimitState.limit === null ? "" : `, limit ${Math.round(supplyLimitState.limit)} W${decision.supplyLimited ? ", active" : ""}`;
 			this.log.debug(
-				`ChargeManager charger ${iWB}: surplus ${Math.round(decision.availablePower)} W → optimal ${decision.optimalCurrent ?? 0} A, ramp ${decision.nextState.currentAmp} A, action=${decision.action} (${decision.reason}), car=${carState}`,
+				`ChargeManager charger ${iWB}: surplus ${Math.round(decision.availablePower)} W → optimal ${decision.optimalCurrent ?? 0} A, ramp ${decision.nextState.currentAmp} A, action=${decision.action} (${decision.reason}), car=${carState}${limitNote}`,
 			);
 
 			const phaseDecision = phaseDecisions[index];

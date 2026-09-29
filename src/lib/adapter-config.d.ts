@@ -8,6 +8,7 @@ declare global {
 			stateHomeBatSoc: string;
 			stateHomeSolarPower: string;
 			stateHomePowerConsumption: string;
+			stateHomeGridImport?: string;
 			subtractSelfConsumption: boolean;
 			chargeManagerReservePower: number;
 			chargeManagerMaxBatteryBonus: number;

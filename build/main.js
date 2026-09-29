@@ -56,6 +56,7 @@ let maxAmpTotal = 0;
 let chargeManagerBatteryMode = "priority";
 let chargeManagerBatterySocHysteresis = 0;
 let chargeManagerBatterySocMaxAgeSeconds = 0;
+let supplyLimitState = { limit: null, importCycles: 0 };
 class go_e_charger extends utils.Adapter {
     projectUtils = new projectUtils_1.ProjectUtils(this);
     wallboxInfoList = [];
@@ -965,6 +966,10 @@ class go_e_charger extends utils.Adapter {
         const plans = new Array(this.config.wallBoxList.length).fill(undefined);
         const candidates = [...this.config.wallBoxList.keys()].filter(iWB => this.wallboxInfoList[iWB].ChargeManager && !this.wallboxInfoList[iWB].ChargeNOW);
         if (!candidates.length) {
+            if (supplyLimitState.limit !== null) {
+                this.log.info(`ChargeManager: supply limit released`);
+            }
+            supplyLimitState = { limit: null, importCycles: 0 };
             return plans;
         }
         solarPower = await this.projectUtils.asyncGetForeignStateVal(this.config.stateHomeSolarPower);
@@ -1021,6 +1026,26 @@ class go_e_charger extends utils.Adapter {
         if (batterySoc !== null) {
             this.log.debug(`Got external state of battery SoC: ${batterySoc}%`);
         }
+        if (this.config.stateHomeGridImport) {
+            const gridImport = await this.projectUtils.asyncGetForeignStateVal(this.config.stateHomeGridImport);
+            this.log.debug(`Got external state of grid import: ${gridImport} W`);
+            const update = (0, chargeManagerUtils_1.updateSupplyLimit)(supplyLimitState, {
+                gridImport,
+                houseConsumption,
+                chargerPower: fleetChargePower,
+                subtractChargerPower: this.config.subtractSelfConsumption,
+                reservePower: chargeManagerReservePower,
+                maximumFleetPower: served.reduce((sum, iWB) => sum + this.wallboxInfoList[iWB].MaxAmp * chargeManagerUtils_1.PHASE_VOLTAGE * 3, 0),
+                cycleTimeMs: this.config.cycleTime,
+            });
+            supplyLimitState = update.state;
+            if (update.event === "created") {
+                this.log.info(`ChargeManager: grid import of ${Math.round(Number(gridImport))} W while charging - limiting the supply to ${Math.round(update.state.limit ?? 0)} W`);
+            }
+            else if (update.event === "released") {
+                this.log.info(`ChargeManager: supply limit released`);
+            }
+        }
         const now = Date.now();
         const phaseInputs = served.map(iWB => {
             const info = this.wallboxInfoList[iWB];
@@ -1046,12 +1071,14 @@ class go_e_charger extends utils.Adapter {
             batteryMode: chargeManagerBatteryMode,
             reservePower: chargeManagerReservePower,
             maximumBatteryBonus: chargeManagerMaxBatteryBonus,
+            supplyLimit: supplyLimitState.limit,
         }, participants, phaseInputs);
         served.forEach((iWB, index) => {
             plans[iWB] = { decision: decisions[index], batteryReason: "available" };
             const decision = decisions[index];
             const carState = this.wallboxInfoList[iWB].CarState;
-            this.log.debug(`ChargeManager charger ${iWB}: surplus ${Math.round(decision.availablePower)} W → optimal ${decision.optimalCurrent ?? 0} A, ramp ${decision.nextState.currentAmp} A, action=${decision.action} (${decision.reason}), car=${carState}`);
+            const limitNote = supplyLimitState.limit === null ? "" : `, limit ${Math.round(supplyLimitState.limit)} W${decision.supplyLimited ? ", active" : ""}`;
+            this.log.debug(`ChargeManager charger ${iWB}: surplus ${Math.round(decision.availablePower)} W → optimal ${decision.optimalCurrent ?? 0} A, ramp ${decision.nextState.currentAmp} A, action=${decision.action} (${decision.reason}), car=${carState}${limitNote}`);
             const phaseDecision = phaseDecisions[index];
             const info = this.wallboxInfoList[iWB];
             if (!phaseDecision) {
