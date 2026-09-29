@@ -450,6 +450,99 @@ export function decideChargeManager(input: ChargeManagerControllerInput): Charge
 	};
 }
 
+/**
+ * Grid import in watts above which the house counts as drawing from the grid while the
+ * ChargeManager charges. Known limit: fixed; a control deviation of the inverter below it is
+ * tolerated.
+ */
+export const GRID_IMPORT_THRESHOLD_W = 150;
+
+/**
+ * Consecutive cycles above {@link GRID_IMPORT_THRESHOLD_W} before a supply limit is learned, so a
+ * load step the inverter settles within seconds does not throttle the charge.
+ */
+export const GRID_IMPORT_CYCLES = 2;
+
+/**
+ * Watts per minute the learned supply limit rises while no grid import is seen. Known limit: fixed;
+ * while the bottleneck persists, every step up costs a grid import of one ampere for two cycles.
+ */
+export const SUPPLY_LIMIT_RELAX_W_PER_MIN = 250;
+
+/** Supply limit carried between ChargeManager cycles. */
+export interface SupplyLimitState {
+	/** Highest total house draw in watts the installation delivered without the grid; `null` without a limit */
+	limit: number | null;
+	/** Consecutive cycles with grid import above the threshold while the ChargeManager wallboxes drew power */
+	importCycles: number;
+}
+
+/** Measurements for one {@link updateSupplyLimit} step. */
+export interface SupplyLimitInput {
+	/** Raw value of the grid-import state in watts, import positive; anything but a finite number counts as no import */
+	gridImport: unknown;
+	/** Current household consumption in watts */
+	houseConsumption: number;
+	/** Summed consumption of the wallboxes run by the ChargeManager in watts */
+	chargerPower: number;
+	/** Whether the wallbox consumption is already part of the household consumption */
+	subtractChargerPower: boolean;
+	/** Grid reserve power in watts */
+	reservePower: number;
+	/** Power of all ChargeManager wallboxes at their maximum current on three phases in watts */
+	maximumFleetPower: number;
+	/** Control cycle time in milliseconds */
+	cycleTimeMs: number;
+}
+
+/** Result of one {@link updateSupplyLimit} step. */
+export interface SupplyLimitUpdate {
+	/** State for the next cycle */
+	state: SupplyLimitState;
+	/** `created` when a limit appears, `released` when it is dropped, otherwise `null` */
+	event: "created" | "released" | null;
+}
+
+/**
+ * Learns how much power the installation delivers without the grid and relaxes that limit again.
+ *
+ * The ChargeManager surplus (PV − house + battery bonus) can exceed what the installation delivers:
+ * a hybrid inverter caps PV and battery together (GoodWe GW10KN-ET at about 9 kW AC on 2026-09-28),
+ * the battery has a discharge limit, or it is empty. The difference then comes from the grid. When
+ * the import stays above {@link GRID_IMPORT_THRESHOLD_W} for {@link GRID_IMPORT_CYCLES} cycles while
+ * the ChargeManager wallboxes draw power, the total house draw minus the import is taken as the
+ * limit. Without import the limit rises by {@link SUPPLY_LIMIT_RELAX_W_PER_MIN}, and it is dropped
+ * once it no longer caps the maximum current.
+ *
+ * @param previous State from the previous cycle
+ * @param input Measurements of this cycle
+ * @returns The state for the next cycle and whether a limit appeared or was dropped
+ */
+export function updateSupplyLimit(previous: SupplyLimitState, input: SupplyLimitInput): SupplyLimitUpdate {
+	const gridImport = typeof input.gridImport === "number" && Number.isFinite(input.gridImport) ? input.gridImport : null;
+	const measured = Number.isFinite(input.houseConsumption) && Number.isFinite(input.chargerPower);
+	const totalDraw = input.subtractChargerPower ? input.houseConsumption : input.houseConsumption + input.chargerPower;
+	const importing = measured && gridImport !== null && gridImport > GRID_IMPORT_THRESHOLD_W && input.chargerPower > 0;
+	const previousCycles = Number.isFinite(previous.importCycles) ? Math.max(0, Math.trunc(previous.importCycles)) : 0;
+	const importCycles = importing ? previousCycles + 1 : 0;
+
+	if (importing && importCycles >= GRID_IMPORT_CYCLES) {
+		return { state: { limit: totalDraw - gridImport, importCycles: 0 }, event: previous.limit === null ? "created" : null };
+	}
+	if (previous.limit === null || importCycles > 0) {
+		// no limit yet, or the first import cycle: neither learn nor relax
+		return { state: { limit: previous.limit, importCycles }, event: null };
+	}
+
+	const cycleTimeMs = Number.isFinite(input.cycleTimeMs) && input.cycleTimeMs > 0 ? input.cycleTimeMs : 0;
+	const limit = previous.limit + (SUPPLY_LIMIT_RELAX_W_PER_MIN * cycleTimeMs) / 60000;
+	const otherLoad = totalDraw - input.chargerPower;
+	if (measured && Number.isFinite(input.maximumFleetPower) && limit - otherLoad - input.reservePower >= input.maximumFleetPower) {
+		return { state: { limit: null, importCycles: 0 }, event: "released" };
+	}
+	return { state: { limit, importCycles: 0 }, event: null };
+}
+
 /** One wallbox taking part in the shared surplus allocation. */
 export interface FleetParticipant {
 	/** Number of active charging phases */

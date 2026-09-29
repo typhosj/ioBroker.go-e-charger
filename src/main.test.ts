@@ -51,6 +51,11 @@ import {
 	updateReleaseRejects,
 	updateShutdownDelay,
 	withdrawReleaseWithModesOff,
+	GRID_IMPORT_THRESHOLD_W,
+	type SupplyLimitInput,
+	type SupplyLimitState,
+	type SupplyLimitUpdate,
+	updateSupplyLimit,
 } from "./lib/chargeManagerUtils";
 
 describe("ChargeManager safety helpers", () => {
@@ -794,6 +799,87 @@ describe("ChargeManager safety helpers", () => {
 		it("resets after sufficient surplus returns", () => {
 			assert.equal(updateShutdownDelay(MIN_CHARGE_CURRENT, MIN_CHARGE_CURRENT, 12), 0);
 			assert.equal(updateShutdownDelay(10, MIN_CHARGE_CURRENT, 12), 0);
+		});
+	});
+
+	describe("updateSupplyLimit", () => {
+		const none: SupplyLimitState = { limit: null, importCycles: 0 };
+		// 2026-09-28 14:30: 9.9 kW house load including a 7.1 kW charge, 300 W from the grid
+		const charging: SupplyLimitInput = {
+			gridImport: 300,
+			houseConsumption: 9900,
+			chargerPower: 7100,
+			subtractChargerPower: true,
+			reservePower: 100,
+			maximumFleetPower: 16 * 230 * 3,
+			cycleTimeMs: 10000,
+		};
+		const twice = (state: SupplyLimitState, input: SupplyLimitInput): SupplyLimitUpdate => updateSupplyLimit(updateSupplyLimit(state, input).state, input);
+
+		it("learns the limit only in the second cycle above the threshold", () => {
+			const first = updateSupplyLimit(none, charging);
+			assert.deepEqual(first, { state: { limit: null, importCycles: 1 }, event: null });
+			assert.deepEqual(updateSupplyLimit(first.state, charging), { state: { limit: 9600, importCycles: 0 }, event: "created" });
+		});
+
+		it("does not count an import of exactly the threshold", () => {
+			let state = none;
+			for (let cycle = 0; cycle < 5; cycle++) {
+				state = updateSupplyLimit(state, { ...charging, gridImport: GRID_IMPORT_THRESHOLD_W }).state;
+			}
+			assert.deepEqual(state, none);
+			assert.equal(twice(none, { ...charging, gridImport: GRID_IMPORT_THRESHOLD_W + 1 }).state.limit, 9900 - 151);
+		});
+
+		it("learns nothing while the ChargeManager wallboxes draw no power", () => {
+			assert.deepEqual(twice(none, { ...charging, chargerPower: 0 }).state, none);
+		});
+
+		it("lowers the limit again while the import persists", () => {
+			const learned: SupplyLimitState = { limit: 9600, importCycles: 1 };
+			assert.deepEqual(updateSupplyLimit(learned, { ...charging, houseConsumption: 9500, gridImport: 400 }), {
+				state: { limit: 9100, importCycles: 0 },
+				event: null,
+			});
+		});
+
+		it("adds the wallboxes when the consumption value excludes them", () => {
+			const excluded = { ...charging, houseConsumption: 2800, subtractChargerPower: false };
+			assert.equal(twice(none, excluded).state.limit, 2800 + 7100 - 300);
+		});
+
+		it("holds the limit in a single import cycle instead of relaxing it", () => {
+			assert.deepEqual(updateSupplyLimit({ limit: 9600, importCycles: 0 }, charging).state, { limit: 9600, importCycles: 1 });
+		});
+
+		it("treats an invalid grid import as no import and keeps relaxing", () => {
+			for (const gridImport of [null, undefined, Number.NaN, Number.POSITIVE_INFINITY, "300", -500]) {
+				const next = updateSupplyLimit({ limit: 9600, importCycles: 1 }, { ...charging, gridImport });
+				assert.equal(next.state.importCycles, 0, String(gridImport));
+				assert.ok(Math.abs((next.state.limit ?? 0) - (9600 + 250 / 6)) < 1e-9, String(gridImport));
+				assert.equal(next.event, null);
+			}
+		});
+
+		it("learns nothing from an invalid house consumption", () => {
+			assert.deepEqual(twice(none, { ...charging, houseConsumption: Number.NaN }).state, none);
+		});
+
+		it("relaxes by 250 W per minute at any cycle time", () => {
+			const quiet = { ...charging, gridImport: 0 };
+			assert.equal(updateSupplyLimit({ limit: 9600, importCycles: 0 }, { ...quiet, cycleTimeMs: 60000 }).state.limit, 9850);
+			assert.equal(updateSupplyLimit({ limit: 9600, importCycles: 0 }, { ...quiet, cycleTimeMs: 30000 }).state.limit, 9725);
+		});
+
+		it("releases the limit exactly when it no longer caps the maximum current", () => {
+			// other load 2800 W + reserve 100 W + maximum 11040 W: released from a relaxed limit of 13940 W
+			const quiet = { ...charging, gridImport: 0, cycleTimeMs: 60000 };
+			assert.deepEqual(updateSupplyLimit({ limit: 13690, importCycles: 0 }, quiet), { state: { limit: null, importCycles: 0 }, event: "released" });
+			assert.deepEqual(updateSupplyLimit({ limit: 13689, importCycles: 0 }, quiet), { state: { limit: 13939, importCycles: 0 }, event: null });
+		});
+
+		it("stays without a limit when nothing is learned", () => {
+			assert.deepEqual(updateSupplyLimit(none, { ...charging, gridImport: 0 }), { state: none, event: null });
 		});
 	});
 

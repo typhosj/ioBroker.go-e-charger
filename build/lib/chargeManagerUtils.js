@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RELEASE_RETRY_INTERVAL = exports.RELEASE_RETRY_LIMIT = exports.CAR_STATE_FINISHED = exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.FORCE_STATE_ON = exports.FORCE_STATE_NEUTRAL = exports.DEFAULT_PHASE_TOGGLE_WAIT_MS = exports.CURRENT_DEADBAND = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DOWN_DELAY_MS = exports.PHASE_SWITCH_UP_DELAY_MS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
+exports.RELEASE_RETRY_INTERVAL = exports.RELEASE_RETRY_LIMIT = exports.CAR_STATE_FINISHED = exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.FORCE_STATE_ON = exports.FORCE_STATE_NEUTRAL = exports.DEFAULT_PHASE_TOGGLE_WAIT_MS = exports.SUPPLY_LIMIT_RELAX_W_PER_MIN = exports.GRID_IMPORT_CYCLES = exports.GRID_IMPORT_THRESHOLD_W = exports.CURRENT_DEADBAND = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DOWN_DELAY_MS = exports.PHASE_SWITCH_UP_DELAY_MS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
 exports.resolveWallboxCurrentLimits = resolveWallboxCurrentLimits;
 exports.evaluateBatteryAvailability = evaluateBatteryAvailability;
 exports.calculateAvailableSurplusPower = calculateAvailableSurplusPower;
@@ -9,6 +9,7 @@ exports.resolveStartChargeCurrent = resolveStartChargeCurrent;
 exports.stepChargeCurrent = stepChargeCurrent;
 exports.updateShutdownDelay = updateShutdownDelay;
 exports.decideChargeManager = decideChargeManager;
+exports.updateSupplyLimit = updateSupplyLimit;
 exports.decideChargeManagerFleet = decideChargeManagerFleet;
 exports.decidePhaseSwitch = decidePhaseSwitch;
 exports.chargerPauseMs = chargerPauseMs;
@@ -205,6 +206,30 @@ function decideChargeManager(input) {
         optimalCurrent,
         nextState: { currentAmp, shutdownDelay },
     };
+}
+exports.GRID_IMPORT_THRESHOLD_W = 150;
+exports.GRID_IMPORT_CYCLES = 2;
+exports.SUPPLY_LIMIT_RELAX_W_PER_MIN = 250;
+function updateSupplyLimit(previous, input) {
+    const gridImport = typeof input.gridImport === "number" && Number.isFinite(input.gridImport) ? input.gridImport : null;
+    const measured = Number.isFinite(input.houseConsumption) && Number.isFinite(input.chargerPower);
+    const totalDraw = input.subtractChargerPower ? input.houseConsumption : input.houseConsumption + input.chargerPower;
+    const importing = measured && gridImport !== null && gridImport > exports.GRID_IMPORT_THRESHOLD_W && input.chargerPower > 0;
+    const previousCycles = Number.isFinite(previous.importCycles) ? Math.max(0, Math.trunc(previous.importCycles)) : 0;
+    const importCycles = importing ? previousCycles + 1 : 0;
+    if (importing && importCycles >= exports.GRID_IMPORT_CYCLES) {
+        return { state: { limit: totalDraw - gridImport, importCycles: 0 }, event: previous.limit === null ? "created" : null };
+    }
+    if (previous.limit === null || importCycles > 0) {
+        return { state: { limit: previous.limit, importCycles }, event: null };
+    }
+    const cycleTimeMs = Number.isFinite(input.cycleTimeMs) && input.cycleTimeMs > 0 ? input.cycleTimeMs : 0;
+    const limit = previous.limit + (exports.SUPPLY_LIMIT_RELAX_W_PER_MIN * cycleTimeMs) / 60000;
+    const otherLoad = totalDraw - input.chargerPower;
+    if (measured && Number.isFinite(input.maximumFleetPower) && limit - otherLoad - input.reservePower >= input.maximumFleetPower) {
+        return { state: { limit: null, importCycles: 0 }, event: "released" };
+    }
+    return { state: { limit, importCycles: 0 }, event: null };
 }
 function decideChargeManagerFleet(shared, participants) {
     let claimedPower = 0;
