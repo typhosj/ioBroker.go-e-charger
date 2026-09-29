@@ -4,6 +4,7 @@ exports.RELEASE_RETRY_INTERVAL = exports.RELEASE_RETRY_LIMIT = exports.CAR_STATE
 exports.resolveWallboxCurrentLimits = resolveWallboxCurrentLimits;
 exports.evaluateBatteryAvailability = evaluateBatteryAvailability;
 exports.calculateAvailableSurplusPower = calculateAvailableSurplusPower;
+exports.isSupplyLimited = isSupplyLimited;
 exports.calculateOptimalChargeCurrent = calculateOptimalChargeCurrent;
 exports.resolveStartChargeCurrent = resolveStartChargeCurrent;
 exports.stepChargeCurrent = stepChargeCurrent;
@@ -112,7 +113,17 @@ function calculateAvailableSurplusPower(input) {
     const batteryOffset = input.batteryMode === "priority" && input.batterySoc !== null && input.minBatterySoc < 100
         ? Math.max(0, (input.maximumBatteryBonus / (100 - input.minBatterySoc)) * (input.batterySoc - input.minBatterySoc))
         : 0;
-    return input.solarPower - input.houseConsumption + (input.subtractChargerPower ? input.chargerPower : 0) - input.reservePower + batteryOffset;
+    const surplus = input.solarPower - input.houseConsumption + (input.subtractChargerPower ? input.chargerPower : 0) - input.reservePower + batteryOffset;
+    if (typeof input.supplyLimit !== "number" || !Number.isFinite(input.supplyLimit)) {
+        return surplus;
+    }
+    const otherLoad = input.subtractChargerPower ? input.houseConsumption - input.chargerPower : input.houseConsumption;
+    return Math.min(surplus, input.supplyLimit - otherLoad - input.reservePower);
+}
+function isSupplyLimited(input) {
+    const limited = calculateAvailableSurplusPower(input);
+    const unlimited = calculateAvailableSurplusPower({ ...input, supplyLimit: null });
+    return limited !== null && unlimited !== null && limited < unlimited;
 }
 function calculateOptimalChargeCurrent(input) {
     if (!Number.isFinite(input.phases) ||
@@ -134,7 +145,7 @@ function resolveStartChargeCurrent(minimum, maximum) {
     return Math.min(Math.max(exports.START_CHARGE_CURRENT, minimum), maximum);
 }
 exports.CURRENT_DEADBAND = 2;
-function stepChargeCurrent(current, target, maximum = exports.MAX_CHARGE_CURRENT, minimum = exports.MIN_CHARGE_CURRENT) {
+function stepChargeCurrent(current, target, maximum = exports.MAX_CHARGE_CURRENT, minimum = exports.MIN_CHARGE_CURRENT, followDown = false) {
     const safeMaximum = Number.isInteger(maximum) && maximum >= exports.MIN_CHARGE_CURRENT && maximum <= exports.MAX_CHARGE_CURRENT ? maximum : exports.MAX_CHARGE_CURRENT;
     const safeMinimum = Number.isInteger(minimum) && minimum >= exports.MIN_CHARGE_CURRENT && minimum <= safeMaximum ? minimum : exports.MIN_CHARGE_CURRENT;
     const safeCurrent = Number.isFinite(current) ? Math.max(0, Math.min(Math.trunc(current), safeMaximum)) : 0;
@@ -146,7 +157,7 @@ function stepChargeCurrent(current, target, maximum = exports.MAX_CHARGE_CURRENT
     const start = resolveStartChargeCurrent(safeMinimum, safeMaximum);
     const reachesStart = safeCurrent < start && safeTarget >= start;
     const atRangeEnd = safeTarget <= safeMinimum || safeTarget === safeMaximum || reachesStart;
-    if (atRangeEnd || Math.abs(gap) >= exports.CURRENT_DEADBAND) {
+    if (atRangeEnd || Math.abs(gap) >= exports.CURRENT_DEADBAND || (followDown && gap < 0)) {
         return safeCurrent + Math.sign(gap);
     }
     return safeCurrent;
@@ -171,41 +182,43 @@ function decideChargeManager(input) {
             nextState: { currentAmp: 0, shutdownDelay: 0 },
         };
     }
-    const currentAmp = stepChargeCurrent(input.state.currentAmp, optimalCurrent, input.maximumChargeCurrent, input.minimumChargeCurrent);
+    const supplyLimited = isSupplyLimited(input);
+    const tagged = (decision) => (supplyLimited ? { ...decision, supplyLimited: true } : decision);
+    const currentAmp = stepChargeCurrent(input.state.currentAmp, optimalCurrent, input.maximumChargeCurrent, input.minimumChargeCurrent, supplyLimited);
     const startChargeCurrent = resolveStartChargeCurrent(input.minimumChargeCurrent, input.maximumChargeCurrent);
     const isRampingToRaisedMinimum = input.minimumChargeCurrent > exports.START_CHARGE_CURRENT && optimalCurrent >= input.minimumChargeCurrent && currentAmp < input.minimumChargeCurrent;
     let shutdownDelay = isRampingToRaisedMinimum ? 0 : updateShutdownDelay(currentAmp, input.minimumChargeCurrent, input.state.shutdownDelay);
     if (currentAmp >= (input.released === true ? input.minimumChargeCurrent : startChargeCurrent)) {
-        return {
+        return tagged({
             action: "enable",
             reason: "charging-current",
             optimalCurrent,
             nextState: { currentAmp, shutdownDelay },
-        };
+        });
     }
     if (currentAmp < input.minimumChargeCurrent) {
         if (shutdownDelay > exports.SHUTDOWN_DELAY_CYCLES) {
             shutdownDelay = 0;
-            return {
+            return tagged({
                 action: "disable",
                 reason: "insufficient-surplus",
                 optimalCurrent,
                 nextState: { currentAmp, shutdownDelay },
-            };
+            });
         }
-        return {
+        return tagged({
             action: "hold",
             reason: "shutdown-delay",
             optimalCurrent,
             nextState: { currentAmp, shutdownDelay },
-        };
+        });
     }
-    return {
+    return tagged({
         action: "hold",
         reason: "hysteresis",
         optimalCurrent,
         nextState: { currentAmp, shutdownDelay },
-    };
+    });
 }
 exports.GRID_IMPORT_THRESHOLD_W = 150;
 exports.GRID_IMPORT_CYCLES = 2;
@@ -234,7 +247,11 @@ function updateSupplyLimit(previous, input) {
 function decideChargeManagerFleet(shared, participants) {
     let claimedPower = 0;
     return participants.map(participant => {
-        const surplus = { ...shared, solarPower: shared.solarPower - claimedPower };
+        const surplus = {
+            ...shared,
+            solarPower: shared.solarPower - claimedPower,
+            ...(typeof shared.supplyLimit === "number" ? { supplyLimit: shared.supplyLimit - claimedPower } : {}),
+        };
         const decision = decideChargeManager({
             ...surplus,
             maximumChargeCurrent: participant.maximumChargeCurrent,

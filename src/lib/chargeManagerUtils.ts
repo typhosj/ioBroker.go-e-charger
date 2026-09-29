@@ -136,6 +136,11 @@ export interface ChargeCalculationInput {
 	reservePower: number;
 	/** Maximum power released by the priority battery curve in watts */
 	maximumBatteryBonus: number;
+	/**
+	 * Learned supply limit in watts (see {@link updateSupplyLimit}); caps the surplus at the limit
+	 * minus the rest of the house load and the reserve. `null`, absent or not finite: no limit
+	 */
+	supplyLimit?: number | null;
 	/** Highest current the ChargeManager may assign */
 	maximumChargeCurrent: number;
 	/** Number of active charging phases */
@@ -176,6 +181,8 @@ export interface ChargeManagerDecision {
 	optimalCurrent: number | null;
 	/** Internal state to retain for the next control cycle */
 	nextState: ChargeManagerState;
+	/** Only present (`true`) when the learned supply limit, not the surplus, set the target */
+	supplyLimited?: boolean;
 }
 
 /** One validated go-e API command. */
@@ -264,7 +271,25 @@ export function calculateAvailableSurplusPower(input: FleetSurplusInput): number
 		input.batteryMode === "priority" && input.batterySoc !== null && input.minBatterySoc < 100
 			? Math.max(0, (input.maximumBatteryBonus / (100 - input.minBatterySoc)) * (input.batterySoc - input.minBatterySoc))
 			: 0;
-	return input.solarPower - input.houseConsumption + (input.subtractChargerPower ? input.chargerPower : 0) - input.reservePower + batteryOffset;
+	const surplus = input.solarPower - input.houseConsumption + (input.subtractChargerPower ? input.chargerPower : 0) - input.reservePower + batteryOffset;
+	if (typeof input.supplyLimit !== "number" || !Number.isFinite(input.supplyLimit)) {
+		return surplus;
+	}
+	// the learned supply limit covers the whole house; the rest of the house load is served first
+	const otherLoad = input.subtractChargerPower ? input.houseConsumption - input.chargerPower : input.houseConsumption;
+	return Math.min(surplus, input.supplyLimit - otherLoad - input.reservePower);
+}
+
+/**
+ * Whether the learned supply limit, not the surplus formula, sets the available power.
+ *
+ * @param input Current energy-management inputs including the supply limit
+ * @returns `true` only when both values are valid and the limit is the lower one
+ */
+export function isSupplyLimited(input: FleetSurplusInput): boolean {
+	const limited = calculateAvailableSurplusPower(input);
+	const unlimited = calculateAvailableSurplusPower({ ...input, supplyLimit: null });
+	return limited !== null && unlimited !== null && limited < unlimited;
 }
 
 /**
@@ -336,9 +361,11 @@ export const CURRENT_DEADBAND = 2;
  * @param target Newly calculated target
  * @param maximum Maximum current allowed by the ChargeManager
  * @param minimum Minimum current allowed by the ChargeManager
+ * @param followDown Follow a downward gap of one ampere as well - set while the learned supply
+ *        limit sets the target, because the ampere the deadband keeps is drawn from the grid there
  * @returns A finite target between 0 and the configured maximum
  */
-export function stepChargeCurrent(current: number, target: number, maximum = MAX_CHARGE_CURRENT, minimum = MIN_CHARGE_CURRENT): number {
+export function stepChargeCurrent(current: number, target: number, maximum = MAX_CHARGE_CURRENT, minimum = MIN_CHARGE_CURRENT, followDown = false): number {
 	const safeMaximum = Number.isInteger(maximum) && maximum >= MIN_CHARGE_CURRENT && maximum <= MAX_CHARGE_CURRENT ? maximum : MAX_CHARGE_CURRENT;
 	const safeMinimum = Number.isInteger(minimum) && minimum >= MIN_CHARGE_CURRENT && minimum <= safeMaximum ? minimum : MIN_CHARGE_CURRENT;
 	const safeCurrent = Number.isFinite(current) ? Math.max(0, Math.min(Math.trunc(current), safeMaximum)) : 0;
@@ -353,7 +380,7 @@ export function stepChargeCurrent(current: number, target: number, maximum = MAX
 	const start = resolveStartChargeCurrent(safeMinimum, safeMaximum);
 	const reachesStart = safeCurrent < start && safeTarget >= start;
 	const atRangeEnd = safeTarget <= safeMinimum || safeTarget === safeMaximum || reachesStart;
-	if (atRangeEnd || Math.abs(gap) >= CURRENT_DEADBAND) {
+	if (atRangeEnd || Math.abs(gap) >= CURRENT_DEADBAND || (followDown && gap < 0)) {
 		return safeCurrent + Math.sign(gap);
 	}
 	return safeCurrent;
@@ -404,7 +431,9 @@ export function decideChargeManager(input: ChargeManagerControllerInput): Charge
 		};
 	}
 
-	const currentAmp = stepChargeCurrent(input.state.currentAmp, optimalCurrent, input.maximumChargeCurrent, input.minimumChargeCurrent);
+	const supplyLimited = isSupplyLimited(input);
+	const tagged = (decision: ChargeManagerDecision): ChargeManagerDecision => (supplyLimited ? { ...decision, supplyLimited: true } : decision);
+	const currentAmp = stepChargeCurrent(input.state.currentAmp, optimalCurrent, input.maximumChargeCurrent, input.minimumChargeCurrent, supplyLimited);
 	const startChargeCurrent = resolveStartChargeCurrent(input.minimumChargeCurrent, input.maximumChargeCurrent);
 	// while ramping up to a raised minimum current the target is briefly below the minimum;
 	// do not count that as an insufficient-surplus cycle
@@ -415,39 +444,39 @@ export function decideChargeManager(input: ChargeManagerControllerInput): Charge
 	// the start current only guards the release; with the start as the floor a running charge kept
 	// the current written last while the ramp went down to the minimum (2026-09-26 17:50)
 	if (currentAmp >= (input.released === true ? input.minimumChargeCurrent : startChargeCurrent)) {
-		return {
+		return tagged({
 			action: "enable",
 			reason: "charging-current",
 			optimalCurrent,
 			nextState: { currentAmp, shutdownDelay },
-		};
+		});
 	}
 
 	if (currentAmp < input.minimumChargeCurrent) {
 		if (shutdownDelay > SHUTDOWN_DELAY_CYCLES) {
 			shutdownDelay = 0;
-			return {
+			return tagged({
 				action: "disable",
 				reason: "insufficient-surplus",
 				optimalCurrent,
 				nextState: { currentAmp, shutdownDelay },
-			};
+			});
 		}
 
-		return {
+		return tagged({
 			action: "hold",
 			reason: "shutdown-delay",
 			optimalCurrent,
 			nextState: { currentAmp, shutdownDelay },
-		};
+		});
 	}
 
-	return {
+	return tagged({
 		action: "hold",
 		reason: "hysteresis",
 		optimalCurrent,
 		nextState: { currentAmp, shutdownDelay },
-	};
+	});
 }
 
 /**
@@ -597,7 +626,12 @@ export function decideChargeManagerFleet(shared: FleetSurplusInput, participants
 
 	return participants.map(participant => {
 		// later wallboxes only see the surplus the earlier ones did not claim
-		const surplus: FleetSurplusInput = { ...shared, solarPower: shared.solarPower - claimedPower };
+		const surplus: FleetSurplusInput = {
+			...shared,
+			solarPower: shared.solarPower - claimedPower,
+			// the supply limit is shared the same way: later wallboxes only get what the earlier ones left
+			...(typeof shared.supplyLimit === "number" ? { supplyLimit: shared.supplyLimit - claimedPower } : {}),
+		};
 		const decision = decideChargeManager({
 			...surplus,
 			maximumChargeCurrent: participant.maximumChargeCurrent,

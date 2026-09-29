@@ -56,6 +56,8 @@ import {
 	type SupplyLimitState,
 	type SupplyLimitUpdate,
 	updateSupplyLimit,
+	calculateAvailableSurplusPower,
+	isSupplyLimited,
 } from "./lib/chargeManagerUtils";
 
 describe("ChargeManager safety helpers", () => {
@@ -698,6 +700,14 @@ describe("ChargeManager safety helpers", () => {
 			assert.equal(stepChargeCurrent(10, 11, 16, 20), 10); // minimum above the maximum
 			assert.equal(stepChargeCurrent(10, 11, 16, 0), 10);
 		});
+
+		it("follows a one-ampere drop while the supply limit sets the target", () => {
+			assert.equal(stepChargeCurrent(12, 11, 16, 6, true), 11);
+			assert.equal(stepChargeCurrent(12, 11, 16, 6), 12); // unchanged without the supply limit
+			assert.equal(stepChargeCurrent(11, 12, 16, 6, true), 11); // upwards the deadband still holds
+			assert.equal(stepChargeCurrent(12, 9, 16, 6, true), 11); // still one ampere per cycle
+			assert.equal(stepChargeCurrent(12, 12, 16, 6, true), 12);
+		});
 	});
 
 	describe("buildChargerCommands", () => {
@@ -880,6 +890,205 @@ describe("ChargeManager safety helpers", () => {
 
 		it("stays without a limit when nothing is learned", () => {
 			assert.deepEqual(updateSupplyLimit(none, { ...charging, gridImport: 0 }), { state: none, event: null });
+		});
+	});
+
+	describe("supply limit in the surplus", () => {
+		// 2026-09-28 14:30 with a full home battery: the formula offers 7300 W, the inverter delivers less
+		const base = {
+			solarPower: 7200,
+			houseConsumption: 9900,
+			chargerPower: 7100,
+			subtractChargerPower: true,
+			batterySoc: 100,
+			minBatterySoc: 75,
+			batteryMode: "priority" as const,
+			reservePower: 100,
+			maximumBatteryBonus: 3000,
+		};
+
+		it("returns the unchanged surplus without a limit", () => {
+			assert.equal(calculateAvailableSurplusPower(base), 7300);
+			assert.equal(calculateAvailableSurplusPower({ ...base, supplyLimit: null }), 7300);
+			for (const supplyLimit of [Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY]) {
+				assert.equal(calculateAvailableSurplusPower({ ...base, supplyLimit }), 7300, String(supplyLimit));
+			}
+		});
+
+		it("caps the surplus at the limit minus the other house load and the reserve", () => {
+			assert.equal(calculateAvailableSurplusPower({ ...base, supplyLimit: 9600 }), 9600 - 2800 - 100);
+			assert.equal(calculateAvailableSurplusPower({ ...base, supplyLimit: 20000 }), 7300);
+		});
+
+		it("takes the whole consumption as other load when it excludes the wallboxes", () => {
+			const excluded = { ...base, houseConsumption: 2800, subtractChargerPower: false };
+			assert.equal(calculateAvailableSurplusPower(excluded), 7300);
+			assert.equal(calculateAvailableSurplusPower({ ...excluded, supplyLimit: 9600 }), 6700);
+		});
+
+		it("still rejects invalid measurements", () => {
+			assert.equal(calculateAvailableSurplusPower({ ...base, houseConsumption: Number.NaN, supplyLimit: 9600 }), null);
+		});
+
+		it("reports whether the limit sets the surplus", () => {
+			assert.equal(isSupplyLimited({ ...base, supplyLimit: 9600 }), true);
+			assert.equal(isSupplyLimited({ ...base, supplyLimit: 20000 }), false);
+			assert.equal(isSupplyLimited(base), false);
+			assert.equal(isSupplyLimited({ ...base, houseConsumption: Number.NaN, supplyLimit: 9600 }), false);
+		});
+
+		describe("decideChargeManager", () => {
+			// plenty of surplus; a limit of 9500 W leaves 8400 W = 12 A on three phases
+			const input = (overrides: Partial<ChargeManagerControllerInput> = {}): ChargeManagerControllerInput => ({
+				solarPower: 20000,
+				houseConsumption: 1000,
+				chargerPower: 0,
+				subtractChargerPower: false,
+				batterySoc: null,
+				minBatterySoc: 70,
+				batteryMode: "disabled",
+				reservePower: 100,
+				maximumBatteryBonus: 2000,
+				maximumChargeCurrent: 16,
+				minimumChargeCurrent: MIN_CHARGE_CURRENT,
+				phases: 3,
+				state: { currentAmp: 13, shutdownDelay: 0 },
+				released: true,
+				...overrides,
+			});
+
+			it("follows a one-ampere drop at once", () => {
+				const decision = decideChargeManager(input({ supplyLimit: 9500 }));
+				assert.equal(decision.optimalCurrent, 12);
+				assert.equal(decision.nextState.currentAmp, 12);
+				assert.equal(decision.action, "enable");
+				assert.equal(decision.supplyLimited, true);
+			});
+
+			it("is unchanged without a limit", () => {
+				const decision = decideChargeManager(input());
+				assert.equal(decision.optimalCurrent, 16);
+				assert.equal(decision.nextState.currentAmp, 14);
+				assert.equal("supplyLimited" in decision, false);
+			});
+
+			it("does not start below the start current", () => {
+				// 1000 W other load + 100 W reserve + 6210 W (9 A) + 10 W
+				const held = input({ supplyLimit: 7320, state: { currentAmp: 9, shutdownDelay: 0 }, released: false });
+				const decision = decideChargeManager(held);
+				assert.equal(decision.optimalCurrent, 9);
+				assert.equal(decision.action, "hold");
+				assert.equal(decision.reason, "hysteresis");
+				assert.equal(decideChargeManager({ ...held, supplyLimit: null }).action, "enable");
+			});
+		});
+
+		it("gives a second wallbox only what the first one left of the limit", () => {
+			const shared = {
+				solarPower: 20000,
+				houseConsumption: 1000,
+				chargerPower: 0,
+				subtractChargerPower: false,
+				batterySoc: null,
+				minBatterySoc: 70,
+				batteryMode: "disabled" as const,
+				reservePower: 100,
+				maximumBatteryBonus: 2000,
+			};
+			const box = (currentAmp: number): FleetParticipant => ({
+				phases: 3,
+				minimumChargeCurrent: MIN_CHARGE_CURRENT,
+				maximumChargeCurrent: 16,
+				state: { currentAmp, shutdownDelay: 0 },
+				claimsPower: true,
+				released: true,
+			});
+			const [first, second] = decideChargeManagerFleet({ ...shared, supplyLimit: 9500 }, [box(12), box(0)]);
+			assert.equal(first.optimalCurrent, 12);
+			assert.equal(second.optimalCurrent, 0);
+			// without the limit the first box reserves its 16 A target, the second gets floor(7860 / 690) = 11 A
+			assert.equal(decideChargeManagerFleet(shared, [box(12), box(0)])[1].optimalCurrent, 11);
+		});
+	});
+
+	describe("supply limit replay of 2026-09-28", () => {
+		// the installation delivers at most 9600 W without the grid (inverter ceiling plus Deye)
+		const SUPPLY = 9600;
+		const run = (
+			cycles: number,
+			otherLoad: number,
+			start: { amp: number; limit: SupplyLimitState },
+			useLimit = true,
+		): { amp: number; limit: SupplyLimitState; importing: number; amps: number[] } => {
+			let amp = start.amp;
+			let limit = start.limit;
+			let importing = 0;
+			const amps: number[] = [];
+			for (let cycle = 0; cycle < cycles; cycle++) {
+				const charger = amp * PHASE_VOLTAGE * 3;
+				const house = otherLoad + charger;
+				const gridImport = Math.max(0, house - SUPPLY);
+				if (gridImport > GRID_IMPORT_THRESHOLD_W) {
+					importing++;
+				}
+				if (useLimit) {
+					limit = updateSupplyLimit(limit, {
+						gridImport,
+						houseConsumption: house,
+						chargerPower: charger,
+						subtractChargerPower: true,
+						reservePower: 100,
+						maximumFleetPower: 16 * PHASE_VOLTAGE * 3,
+						cycleTimeMs: 10000,
+					}).state;
+				}
+				amp = decideChargeManager({
+					solarPower: 7200,
+					houseConsumption: house,
+					chargerPower: charger,
+					subtractChargerPower: true,
+					batterySoc: 100,
+					minBatterySoc: 75,
+					batteryMode: "priority",
+					reservePower: 100,
+					maximumBatteryBonus: 3000,
+					maximumChargeCurrent: 16,
+					minimumChargeCurrent: MIN_CHARGE_CURRENT,
+					phases: 3,
+					state: { currentAmp: amp, shutdownDelay: 0 },
+					released: true,
+					supplyLimit: limit.limit,
+				}).nextState.currentAmp;
+				amps.push(amp);
+			}
+			return { amp, limit, importing, amps };
+		};
+		const fresh = { amp: 12, limit: { limit: null, importCycles: 0 } };
+
+		it("keeps drawing from the grid without the limit", () => {
+			const result = run(200, 2800, fresh, false);
+			assert.equal(result.amp, 11); // the deadband holds one ampere above the 10 A target
+			assert.equal(result.importing, 200);
+		});
+
+		it("drops to 9 A within three cycles and then stays below the import threshold", () => {
+			const result = run(200, 2800, fresh);
+			assert.deepEqual(result.amps.slice(0, 3), [11, 10, 9]);
+			assert.equal(result.importing, 2);
+			assert.ok(result.amps.every(amp => amp <= 11));
+			// 10 A draws 100 W from the grid, below the threshold; the step onto the start current
+			// ignores the deadband, so the ramp settles there once the relaxed limit allows 10 A
+			assert.equal(result.amp, 10);
+			assert.equal(result.limit.limit, null); // relaxed until it no longer caps anything
+		});
+
+		it("raises the current at once when the other house load drops", () => {
+			const limited = run(10, 2800, fresh);
+			assert.notEqual(limited.limit.limit, null);
+			const result = run(30, 1100, { amp: limited.amp, limit: limited.limit });
+			assert.equal(result.amps[0], limited.amp + 1); // no waiting for a probe
+			assert.equal(result.importing, 0);
+			assert.equal(result.amp, 12); // one ampere below the 13 A the surplus formula allows
 		});
 	});
 
