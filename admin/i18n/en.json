@@ -29,6 +29,8 @@
 	"LBL_standardSettings": "Standard settings",
 	"LBL_stateHomeBatSoc": "Object ID for the current state of charge of the home battery [%]",
 	"LBL_stateHomePowerConsumption": "Object ID for the current home power consumption [W]",
+	"LBL_stateHomeGridImport": "Object ID for the current grid import [W] (optional)",
+	"LBL_stateHomeGridImportHelp": "Import positive, export 0 or negative. When set, ChargeManager lowers the charging current while the house draws power from the grid during a surplus charge, e.g. because the inverter or the home battery cannot deliver more. ChargeNOW is not affected. Leave empty to switch this off.",
 	"LBL_stateHomeSolarPower": "Object ID for the currently available solar power [W]",
 	"LBL_subtractSelfConsumption": "Charger consumption is included in the home power consumption value",
 	"LBL_wallBoxList": "Wallbox list",

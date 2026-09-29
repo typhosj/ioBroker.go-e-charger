@@ -78,6 +78,7 @@ Configure the object IDs of the following states:
 
 - currently available solar power [W]
 - current home power consumption [W]
+- current grid import [W] (optional, see _Supply limit from the grid import_ below)
 - current state of charge of your home battery [%] (only required in the battery-aware modes, see _Home battery mode_ below)
 
 #### Input requirements
@@ -88,7 +89,7 @@ Configure the object IDs of the following states:
 | Home power consumption       | Total current household demand | W    | Positive consumption |
 | Home battery state of charge | Current battery charge level   | %    | 0 to 100             |
 
-All configured states must contain numeric values. Power values in kW must be converted to W before they are selected. A grid import/export state cannot be used directly because ChargeManager currently expects separate generation and consumption values.
+All configured states must contain numeric values. Power values in kW must be converted to W before they are selected. A grid import/export state cannot replace these values, because ChargeManager expects separate generation and consumption values; it is only used for the optional supply limit described below.
 
 If no home battery is installed, set the **Home battery mode** to _Disabled_ (see below). No battery state of charge has to be configured, and ChargeManager charges purely from the available PV surplus. The former helper-state workaround (a constant state set to `Settings.Setpoint_HomeBatSoC`) is no longer needed.
 
@@ -97,6 +98,14 @@ If no home battery is installed, set the **Home battery mode** to _Disabled_ (se
 Enable **Charger consumption is included in the home power consumption value** when the selected home-consumption state rises by approximately the charging power after charging starts. ChargeManager then adds the measured wallbox power back before calculating the available surplus. This prevents the controller from treating its own charging load as additional household demand.
 
 Leave the option disabled when the selected state already excludes wallbox consumption.
+
+#### Supply limit from the grid import
+
+Some installations cannot deliver the calculated surplus: a hybrid inverter caps its output (PV and home battery both run through it), the home battery has a maximum discharge power, or it is empty. The surplus formula does not see these limits, so the difference is drawn from the grid.
+
+If **Object ID for the current grid import** is set, ChargeManager watches it. When the grid import stays above 150 W for two poll cycles while a ChargeManager wallbox is charging, it takes the house load the installation delivered without the grid (home power consumption minus grid import) as a supply limit. The wallboxes then get at most this limit minus the rest of the house load and the grid reserve, and the current follows a one-ampere drop at once. Without grid import the limit rises by 250 W per minute, so a rising PV output is used again; while the bottleneck persists, each step up costs a short grid import of one ampere before the limit is learned again. The limit is dropped once it no longer caps the maximum current, when no wallbox runs under ChargeManager, and when the adapter restarts.
+
+The state must contain the grid import in W with import positive; export may be 0 or negative. Leave the field empty to switch the supply limit off. ChargeNOW is not affected and may still draw from the grid.
 
 #### Calculation
 
@@ -260,6 +269,7 @@ If you enjoyed this project – or are just feeling generous – consider buying
 - (typhosj) ChargeManager: a three-phase charge whose surplus no longer carries three phases but still carries one now switches down to one phase instead of being stopped - the shutdown delay ran out before the 3-minute down dwell, so the charge stopped and restarted on one phase instead
 - (typhosj) the info log now reports a phase switch when it is written to the charger; the phase count planned while the charger is held off is only logged at debug level, because it follows the surplus without a dwell and flipped back and forth for hours with a full vehicle connected
 - (typhosj) ChargeManager: a running charge now follows a falling surplus down to the minimum current - the 10 A start current also applied to a running charge, so currents between the minimum and 10 A were never written and the charger stayed at the 10 A written last, drawing the difference from the grid or the home battery until the surplus recovered or the shutdown delay ran out
+- (typhosj) ChargeManager: new optional grid-import state - while the house draws power from the grid during a surplus charge, e.g. because the inverter or the home battery cannot deliver more, the charging current is lowered until the import stops and raised again slowly afterwards
 
 ### 1.7.0 (2026-09-18)
 

@@ -29,6 +29,8 @@
 	"LBL_standardSettings": "Paramètres généraux",
 	"LBL_stateHomeBatSoc": "ID d'objet de l'état de charge de la batterie domestique [%]",
 	"LBL_stateHomePowerConsumption": "ID d'objet de la consommation électrique du domicile [W]",
+	"LBL_stateHomeGridImport": "ID d'objet du soutirage réseau actuel [W] (facultatif)",
+	"LBL_stateHomeGridImportHelp": "Soutirage positif, injection 0 ou négative. Si ce champ est renseigné, ChargeManager réduit le courant de charge tant que la maison soutire de l'électricité au réseau pendant une charge sur surplus, par exemple parce que l'onduleur ou la batterie domestique ne peut pas fournir davantage. ChargeNOW n'est pas concerné. Laisser vide pour désactiver.",
 	"LBL_stateHomeSolarPower": "ID d'objet de la puissance solaire disponible [W]",
 	"LBL_subtractSelfConsumption": "La consommation du chargeur est incluse dans la consommation du domicile",
 	"LBL_wallBoxList": "Liste des wallbox",

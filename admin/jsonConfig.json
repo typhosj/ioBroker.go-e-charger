@@ -231,6 +231,18 @@
 					"xl": 6,
 					"newLine": false
 				},
+				"stateHomeGridImport": {
+					"type": "objectId",
+					"types": "state",
+					"label": "LBL_stateHomeGridImport",
+					"help": "LBL_stateHomeGridImportHelp",
+					"xs": 12,
+					"sm": 6,
+					"md": 6,
+					"lg": 6,
+					"xl": 6,
+					"newLine": true
+				},
 				"chargeManagerReservePower": {
 					"type": "number",
 					"label": "LBL_chargeManagerReservePower",

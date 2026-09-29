@@ -29,6 +29,8 @@
 	"LBL_standardSettings": "Grundeinstellungen",
 	"LBL_stateHomeBatSoc": "Objekt-ID des aktuellen Ladezustands der Hausbatterie [%]",
 	"LBL_stateHomePowerConsumption": "Objekt-ID des aktuellen Hausstromverbrauchs [W]",
+	"LBL_stateHomeGridImport": "Objekt-ID des aktuellen Netzbezugs [W] (optional)",
+	"LBL_stateHomeGridImportHelp": "Bezug positiv, Einspeisung 0 oder negativ. Ist das Feld gesetzt, senkt der ChargeManager den Ladestrom, solange das Haus während einer Überschussladung Strom aus dem Netz bezieht, etwa weil Wechselrichter oder Hausakku nicht mehr liefern. ChargeNOW bleibt unverändert. Leer lassen, um die Funktion abzuschalten.",
 	"LBL_stateHomeSolarPower": "Objekt-ID der aktuell verfügbaren Solarleistung [W]",
 	"LBL_subtractSelfConsumption": "Wallbox-Verbrauch ist im Hausstromverbrauch enthalten",
 	"LBL_wallBoxList": "Wallbox-Liste",

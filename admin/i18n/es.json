@@ -29,6 +29,8 @@
 	"LBL_standardSettings": "Ajustes generales",
 	"LBL_stateHomeBatSoc": "ID de objeto del estado de carga de la batería doméstica [%]",
 	"LBL_stateHomePowerConsumption": "ID de objeto del consumo eléctrico del hogar [W]",
+	"LBL_stateHomeGridImport": "ID de objeto de la importación actual de la red [W] (opcional)",
+	"LBL_stateHomeGridImportHelp": "Importación positiva, exportación 0 o negativa. Si se configura, ChargeManager reduce la corriente de carga mientras la casa toma energía de la red durante una carga con excedente, p. ej. porque el inversor o la batería doméstica no pueden entregar más. ChargeNOW no se ve afectado. Déjelo vacío para desactivarlo.",
 	"LBL_stateHomeSolarPower": "ID de objeto de la potencia solar disponible [W]",
 	"LBL_subtractSelfConsumption": "El consumo del cargador ya está incluido en el consumo del hogar",
 	"LBL_wallBoxList": "Lista de wallbox",

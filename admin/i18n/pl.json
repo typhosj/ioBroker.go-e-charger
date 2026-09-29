@@ -29,6 +29,8 @@
 	"LBL_standardSettings": "Ustawienia standardowe",
 	"LBL_stateHomeBatSoc": "ID obiektu ze stanem naładowania baterii domowej [%]",
 	"LBL_stateHomePowerConsumption": "ID obiektu z aktualnym zużyciem energii w domu [W]",
+	"LBL_stateHomeGridImport": "ID obiektu z aktualnym poborem z sieci [W] (opcjonalnie)",
+	"LBL_stateHomeGridImportHelp": "Pobór dodatni, oddawanie 0 lub ujemne. Jeśli ustawione, ChargeManager obniża prąd ładowania, gdy dom pobiera energię z sieci podczas ładowania nadwyżką, np. dlatego, że falownik lub magazyn energii nie mogą dostarczyć więcej. ChargeNOW nie jest objęty. Pozostaw puste, aby wyłączyć.",
 	"LBL_stateHomeSolarPower": "ID obiektu z aktualnie dostępną mocą fotowoltaiki [W]",
 	"LBL_subtractSelfConsumption": "Pobór ładowarki jest wliczony w zużycie energii w domu",
 	"LBL_wallBoxList": "Lista wallboxów",

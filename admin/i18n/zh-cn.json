@@ -29,6 +29,8 @@
 	"LBL_standardSettings": "常规设置",
 	"LBL_stateHomeBatSoc": "家庭电池当前电量的对象 ID [%]",
 	"LBL_stateHomePowerConsumption": "家庭当前用电量的对象 ID [W]",
+	"LBL_stateHomeGridImport": "当前电网取电的对象 ID [W]（可选）",
+	"LBL_stateHomeGridImportHelp": "取电为正，馈电为 0 或负值。设置后，在余电充电期间只要房屋从电网取电（例如逆变器或家用电池无法提供更多功率），ChargeManager 就会降低充电电流。ChargeNOW 不受影响。留空则关闭此功能。",
 	"LBL_stateHomeSolarPower": "当前可用光伏功率的对象 ID [W]",
 	"LBL_subtractSelfConsumption": "家庭用电量中已包含充电桩的耗电",
 	"LBL_wallBoxList": "充电桩列表",

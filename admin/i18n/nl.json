@@ -29,6 +29,8 @@
 	"LBL_standardSettings": "Standaardinstellingen",
 	"LBL_stateHomeBatSoc": "Object-ID van de laadtoestand van de thuisbatterij [%]",
 	"LBL_stateHomePowerConsumption": "Object-ID van het huidige huisverbruik [W]",
+	"LBL_stateHomeGridImport": "Object-ID van de huidige netafname [W] (optioneel)",
+	"LBL_stateHomeGridImportHelp": "Afname positief, teruglevering 0 of negatief. Indien ingesteld verlaagt ChargeManager de laadstroom zolang het huis tijdens het laden met overschot stroom van het net afneemt, bijvoorbeeld omdat de omvormer of de thuisbatterij niet meer kan leveren. ChargeNOW blijft ongewijzigd. Leeg laten om dit uit te schakelen.",
 	"LBL_stateHomeSolarPower": "Object-ID van het beschikbare zonnevermogen [W]",
 	"LBL_subtractSelfConsumption": "Verbruik van de wallbox zit al in het huisverbruik",
 	"LBL_wallBoxList": "Wallboxlijst",
