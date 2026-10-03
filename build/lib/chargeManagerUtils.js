@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.RELEASE_RETRY_INTERVAL = exports.RELEASE_RETRY_LIMIT = exports.CAR_STATE_FINISHED = exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.FORCE_STATE_ON = exports.FORCE_STATE_NEUTRAL = exports.DEFAULT_PHASE_TOGGLE_WAIT_MS = exports.SUPPLY_LIMIT_RELAX_W_PER_MIN = exports.GRID_IMPORT_CYCLES = exports.GRID_IMPORT_THRESHOLD_W = exports.CURRENT_DEADBAND = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DOWN_DELAY_MS = exports.PHASE_SWITCH_UP_DELAY_MS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
+exports.RELEASE_RETRY_INTERVAL = exports.RELEASE_RETRY_LIMIT = exports.CAR_STATE_FINISHED = exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.FORCE_STATE_ON = exports.FORCE_STATE_NEUTRAL = exports.DEFAULT_PHASE_TOGGLE_WAIT_MS = exports.SUPPLY_LIMIT_RELAX_W_PER_MIN = exports.GRID_IMPORT_MIN_MS = exports.GRID_IMPORT_CYCLES = exports.GRID_IMPORT_THRESHOLD_W = exports.CURRENT_DEADBAND = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DOWN_DELAY_MS = exports.PHASE_SWITCH_UP_DELAY_MS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
 exports.resolveWallboxCurrentLimits = resolveWallboxCurrentLimits;
 exports.evaluateBatteryAvailability = evaluateBatteryAvailability;
 exports.calculateAvailableSurplusPower = calculateAvailableSurplusPower;
@@ -222,6 +222,7 @@ function decideChargeManager(input) {
 }
 exports.GRID_IMPORT_THRESHOLD_W = 150;
 exports.GRID_IMPORT_CYCLES = 2;
+exports.GRID_IMPORT_MIN_MS = 120000;
 exports.SUPPLY_LIMIT_RELAX_W_PER_MIN = 250;
 function updateSupplyLimit(previous, input) {
     const gridImport = typeof input.gridImport === "number" && Number.isFinite(input.gridImport) ? input.gridImport : null;
@@ -230,13 +231,14 @@ function updateSupplyLimit(previous, input) {
     const importing = measured && gridImport !== null && gridImport > exports.GRID_IMPORT_THRESHOLD_W && input.chargerPower > 0;
     const previousCycles = Number.isFinite(previous.importCycles) ? Math.max(0, Math.trunc(previous.importCycles)) : 0;
     const importCycles = importing ? previousCycles + 1 : 0;
-    if (importing && importCycles >= exports.GRID_IMPORT_CYCLES) {
+    const cycleTimeMs = Number.isFinite(input.cycleTimeMs) && input.cycleTimeMs > 0 ? input.cycleTimeMs : 0;
+    const neededCycles = previous.limit === null && cycleTimeMs > 0 ? Math.max(exports.GRID_IMPORT_CYCLES, Math.ceil(exports.GRID_IMPORT_MIN_MS / cycleTimeMs)) : exports.GRID_IMPORT_CYCLES;
+    if (importing && importCycles >= neededCycles) {
         return { state: { limit: totalDraw - gridImport, importCycles: 0 }, event: previous.limit === null ? "created" : null };
     }
     if (previous.limit === null || importCycles > 0) {
         return { state: { limit: previous.limit, importCycles }, event: null };
     }
-    const cycleTimeMs = Number.isFinite(input.cycleTimeMs) && input.cycleTimeMs > 0 ? input.cycleTimeMs : 0;
     const limit = previous.limit + (exports.SUPPLY_LIMIT_RELAX_W_PER_MIN * cycleTimeMs) / 60000;
     const otherLoad = totalDraw - input.chargerPower;
     if (measured && Number.isFinite(input.maximumFleetPower) && limit - otherLoad - input.reservePower >= input.maximumFleetPower) {

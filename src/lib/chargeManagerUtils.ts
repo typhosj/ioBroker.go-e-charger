@@ -487,10 +487,17 @@ export function decideChargeManager(input: ChargeManagerControllerInput): Charge
 export const GRID_IMPORT_THRESHOLD_W = 150;
 
 /**
- * Consecutive cycles above {@link GRID_IMPORT_THRESHOLD_W} before a supply limit is learned, so a
- * load step the inverter settles within seconds does not throttle the charge.
+ * Consecutive cycles above {@link GRID_IMPORT_THRESHOLD_W} before an existing supply limit is lowered,
+ * and the minimum before a first one is learned.
  */
 export const GRID_IMPORT_CYCLES = 2;
+
+/**
+ * How long the grid import has to persist before a first supply limit is learned. The GoodWe took
+ * 50 s to follow a car start on 2026-10-03 while its battery turned from charging to discharging;
+ * a limit learned from that throttled a charge the installation could carry.
+ */
+export const GRID_IMPORT_MIN_MS = 120000;
 
 /**
  * Watts per minute the learned supply limit rises while no grid import is seen. Known limit: fixed;
@@ -538,9 +545,9 @@ export interface SupplyLimitUpdate {
  * The ChargeManager surplus (PV − house + battery bonus) can exceed what the installation delivers:
  * a hybrid inverter caps PV and battery together (GoodWe GW10KN-ET at about 9 kW AC on 2026-09-28),
  * the battery has a discharge limit, or it is empty. The difference then comes from the grid. When
- * the import stays above {@link GRID_IMPORT_THRESHOLD_W} for {@link GRID_IMPORT_CYCLES} cycles while
- * the ChargeManager wallboxes draw power, the total house draw minus the import is taken as the
- * limit. Without import the limit rises by {@link SUPPLY_LIMIT_RELAX_W_PER_MIN}, and it is dropped
+ * the import stays above {@link GRID_IMPORT_THRESHOLD_W} while the ChargeManager wallboxes draw
+ * power, for {@link GRID_IMPORT_MIN_MS} before a first limit and {@link GRID_IMPORT_CYCLES} cycles
+ * for a lower one, the total house draw minus the import is taken as the limit. Without import the limit rises by {@link SUPPLY_LIMIT_RELAX_W_PER_MIN}, and it is dropped
  * once it no longer caps the maximum current.
  *
  * @param previous State from the previous cycle
@@ -554,16 +561,18 @@ export function updateSupplyLimit(previous: SupplyLimitState, input: SupplyLimit
 	const importing = measured && gridImport !== null && gridImport > GRID_IMPORT_THRESHOLD_W && input.chargerPower > 0;
 	const previousCycles = Number.isFinite(previous.importCycles) ? Math.max(0, Math.trunc(previous.importCycles)) : 0;
 	const importCycles = importing ? previousCycles + 1 : 0;
+	const cycleTimeMs = Number.isFinite(input.cycleTimeMs) && input.cycleTimeMs > 0 ? input.cycleTimeMs : 0;
+	const neededCycles =
+		previous.limit === null && cycleTimeMs > 0 ? Math.max(GRID_IMPORT_CYCLES, Math.ceil(GRID_IMPORT_MIN_MS / cycleTimeMs)) : GRID_IMPORT_CYCLES;
 
-	if (importing && importCycles >= GRID_IMPORT_CYCLES) {
+	if (importing && importCycles >= neededCycles) {
 		return { state: { limit: totalDraw - gridImport, importCycles: 0 }, event: previous.limit === null ? "created" : null };
 	}
 	if (previous.limit === null || importCycles > 0) {
-		// no limit yet, or the first import cycle: neither learn nor relax
+		// no limit yet, or the import has not lasted long enough: neither learn nor relax
 		return { state: { limit: previous.limit, importCycles }, event: null };
 	}
 
-	const cycleTimeMs = Number.isFinite(input.cycleTimeMs) && input.cycleTimeMs > 0 ? input.cycleTimeMs : 0;
 	const limit = previous.limit + (SUPPLY_LIMIT_RELAX_W_PER_MIN * cycleTimeMs) / 60000;
 	const otherLoad = totalDraw - input.chargerPower;
 	if (measured && Number.isFinite(input.maximumFleetPower) && limit - otherLoad - input.reservePower >= input.maximumFleetPower) {

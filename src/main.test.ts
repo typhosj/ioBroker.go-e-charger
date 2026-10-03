@@ -51,6 +51,7 @@ import {
 	updateReleaseRejects,
 	updateShutdownDelay,
 	withdrawReleaseWithModesOff,
+	GRID_IMPORT_MIN_MS,
 	GRID_IMPORT_THRESHOLD_W,
 	type SupplyLimitInput,
 	type SupplyLimitState,
@@ -824,12 +825,52 @@ describe("ChargeManager safety helpers", () => {
 			maximumFleetPower: 16 * 230 * 3,
 			cycleTimeMs: 10000,
 		};
-		const twice = (state: SupplyLimitState, input: SupplyLimitInput): SupplyLimitUpdate => updateSupplyLimit(updateSupplyLimit(state, input).state, input);
+		const repeat = (cycles: number, state: SupplyLimitState, input: SupplyLimitInput): SupplyLimitUpdate => {
+			let update: SupplyLimitUpdate = { state, event: null };
+			for (let cycle = 0; cycle < cycles; cycle++) {
+				update = updateSupplyLimit(update.state, input);
+			}
+			return update;
+		};
+		// two minutes at the 10 s cycle
+		const sustained = (state: SupplyLimitState, input: SupplyLimitInput): SupplyLimitUpdate => repeat(12, state, input);
 
-		it("learns the limit only in the second cycle above the threshold", () => {
-			const first = updateSupplyLimit(none, charging);
-			assert.deepEqual(first, { state: { limit: null, importCycles: 1 }, event: null });
-			assert.deepEqual(updateSupplyLimit(first.state, charging), { state: { limit: 9600, importCycles: 0 }, event: "created" });
+		it("learns a first limit only after two minutes above the threshold", () => {
+			assert.equal(GRID_IMPORT_MIN_MS, 120000);
+			assert.deepEqual(repeat(11, none, charging), { state: { limit: null, importCycles: 11 }, event: null });
+			assert.deepEqual(sustained(none, charging), { state: { limit: 9600, importCycles: 0 }, event: "created" });
+		});
+
+		it("learns nothing while the battery turns from charging to discharging", () => {
+			// 2026-10-03 10:51:40: the car starts with 2 kW while the battery still charges with 1.3 kW;
+			// the GoodWe takes 50 s to follow, the installation could carry the charge all along
+			let state = none;
+			for (const gridImport of [1001, 172, 158, 224, 246, 0, 0, 37, 19, 0]) {
+				state = updateSupplyLimit(state, { ...charging, gridImport, houseConsumption: 2460, chargerPower: 2040 }).state;
+			}
+			assert.equal(state.limit, null);
+		});
+
+		it("scales the two minutes with the cycle time", () => {
+			assert.equal(repeat(3, none, { ...charging, cycleTimeMs: 30000 }).state.limit, null);
+			assert.equal(repeat(4, none, { ...charging, cycleTimeMs: 30000 }).state.limit, 9600);
+			assert.equal(repeat(39, none, { ...charging, cycleTimeMs: 3000 }).state.limit, null);
+			assert.equal(repeat(40, none, { ...charging, cycleTimeMs: 3000 }).state.limit, 9600);
+			// a cycle longer than two minutes still needs two cycles
+			assert.equal(repeat(1, none, { ...charging, cycleTimeMs: 180000 }).state.limit, null);
+			assert.equal(repeat(2, none, { ...charging, cycleTimeMs: 180000 }).state.limit, 9600);
+		});
+
+		it("falls back to two cycles on an invalid cycle time", () => {
+			for (const cycleTimeMs of [0, -10000, Number.NaN, Number.POSITIVE_INFINITY]) {
+				assert.equal(repeat(1, none, { ...charging, cycleTimeMs }).state.limit, null, String(cycleTimeMs));
+				assert.equal(repeat(2, none, { ...charging, cycleTimeMs }).state.limit, 9600, String(cycleTimeMs));
+			}
+		});
+
+		it("lowers an existing limit already in the second import cycle", () => {
+			const update = repeat(2, { limit: 9900, importCycles: 0 }, charging);
+			assert.deepEqual(update, { state: { limit: 9600, importCycles: 0 }, event: null });
 		});
 
 		it("does not count an import of exactly the threshold", () => {
@@ -838,11 +879,11 @@ describe("ChargeManager safety helpers", () => {
 				state = updateSupplyLimit(state, { ...charging, gridImport: GRID_IMPORT_THRESHOLD_W }).state;
 			}
 			assert.deepEqual(state, none);
-			assert.equal(twice(none, { ...charging, gridImport: GRID_IMPORT_THRESHOLD_W + 1 }).state.limit, 9900 - 151);
+			assert.equal(sustained(none, { ...charging, gridImport: GRID_IMPORT_THRESHOLD_W + 1 }).state.limit, 9900 - 151);
 		});
 
 		it("learns nothing while the ChargeManager wallboxes draw no power", () => {
-			assert.deepEqual(twice(none, { ...charging, chargerPower: 0 }).state, none);
+			assert.deepEqual(sustained(none, { ...charging, chargerPower: 0 }).state, none);
 		});
 
 		it("lowers the limit again while the import persists", () => {
@@ -855,7 +896,7 @@ describe("ChargeManager safety helpers", () => {
 
 		it("adds the wallboxes when the consumption value excludes them", () => {
 			const excluded = { ...charging, houseConsumption: 2800, subtractChargerPower: false };
-			assert.equal(twice(none, excluded).state.limit, 2800 + 7100 - 300);
+			assert.equal(sustained(none, excluded).state.limit, 2800 + 7100 - 300);
 		});
 
 		it("holds the limit in a single import cycle instead of relaxing it", () => {
@@ -872,7 +913,7 @@ describe("ChargeManager safety helpers", () => {
 		});
 
 		it("learns nothing from an invalid house consumption", () => {
-			assert.deepEqual(twice(none, { ...charging, houseConsumption: Number.NaN }).state, none);
+			assert.deepEqual(sustained(none, { ...charging, houseConsumption: Number.NaN }).state, none);
 		});
 
 		it("relaxes by 250 W per minute at any cycle time", () => {
@@ -1071,10 +1112,11 @@ describe("ChargeManager safety helpers", () => {
 			assert.equal(result.importing, 200);
 		});
 
-		it("drops to 9 A within three cycles and then stays below the import threshold", () => {
+		it("drops to 9 A two cycles after two minutes of import and then stays below the import threshold", () => {
 			const result = run(200, 2800, fresh);
-			assert.deepEqual(result.amps.slice(0, 3), [11, 10, 9]);
-			assert.equal(result.importing, 2);
+			// the first limit waits two minutes (12 cycles) for the import to persist
+			assert.deepEqual(result.amps.slice(0, 13), [11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 11, 10, 9]);
+			assert.equal(result.importing, 12);
 			assert.ok(result.amps.every(amp => amp <= 11));
 			// 10 A draws 100 W from the grid, below the threshold; the step onto the start current
 			// ignores the deadband, so the ramp settles there once the relaxed limit allows 10 A
@@ -1083,7 +1125,7 @@ describe("ChargeManager safety helpers", () => {
 		});
 
 		it("raises the current at once when the other house load drops", () => {
-			const limited = run(10, 2800, fresh);
+			const limited = run(15, 2800, fresh);
 			assert.notEqual(limited.limit.limit, null);
 			const result = run(30, 1100, { amp: limited.amp, limit: limited.limit });
 			assert.equal(result.amps[0], limited.amp + 1); // no waiting for a probe
