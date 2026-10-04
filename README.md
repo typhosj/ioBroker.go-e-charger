@@ -223,7 +223,9 @@ The budget is allocated in priority order: ChargeNOW wallboxes first, then Charg
 
 A value of `0` (default) disables the budget; the adapter then does not enforce a combined limit, so make sure the sum of the per-wallbox maximum currents stays within your installation's capacity.
 
-> This is a conservative model: every ampere counts against one budget regardless of which phase it lands on. It never exceeds the fuse rating, but with loads spread across phases it may leave some capacity unused.
+While the budget is active, the adapter also **follows the actually measured charging current**: if a wallbox draws noticeably less than it is allowed (e.g. a vehicle with a lower onboard-charger limit, a car tapering near full, or temperature derating), its unused current is reclaimed after a few cycles and handed to the next wallbox in priority order. The wallbox keeps a small headroom above its real draw and is offered one ampere more each cycle as long as it uses what it gets, so it can grow back to its limit. To stay safe, a wallbox is only ever throttled *down* to reclaim capacity — its command is never left high while the freed amperes are given away — so the summed current can never exceed the fuse even if a vehicle suddenly ramps back up.
+
+> This is a conservative per-phase-agnostic model: every ampere counts against one budget regardless of which phase it lands on. It never exceeds the fuse rating, but with loads spread across phases it may leave some capacity unused.
 
 ## Sentry
 
@@ -240,19 +242,10 @@ If you enjoyed this project – or are just feeling generous – consider buying
   Placeholder for the next version (at the beginning of the line):
   ### **WORK IN PROGRESS**
 -->
-
 ### **WORK IN PROGRESS**
 
-- (hombach) added an installation-wide total current budget (maximum total charging current) that caps the summed current of all wallboxes to protect a shared fuse, serving ChargeNOW before ChargeManager and keeping a wallbox without a connected vehicle off so idle wallboxes neither trip the fuse nor starve one that is already charging
-- (hombach) added concise debug logging for the ChargeManager control loops (surplus sharing, phase switching, total current budget)
-- (hombach) docs: documented the total current budget
 - (typhosj) ChargeManager: new per-wallbox option to withdraw the charge release when the vehicle draws no power for 5 minutes - vehicles such as the Renault Zoe otherwise stay in charging mode, e.g. in the evening when the battery bonus keeps the release active (reported by a user)
-- (typhosj) the phase mode (`psm`) is now only written when the charger reports a different mode instead of every cycle, because it is a stored charger setting
 - (typhosj) ChargeManager: new state `Settings.PhaseMode` switches between fixed one-phase, fixed three-phase and automatic phase switching at runtime; the instance option now only makes the automatic mode available
-- (typhosj) ChargeManager: no charge release, charging current or phase switch is sent while no vehicle is plugged in, and an unchanged release or current is no longer re-sent every cycle - each write woke the charger's LEDs
-- (typhosj) the charging current is no longer re-sent every cycle: the charger reports a written `amx` back as 0 and only shows the applied current in `amp`, so the check for an unchanged value never matched
-- (typhosj) the charge release is no longer re-sent on every single cycle while the vehicle reports that it has finished charging - the charger confirms each write and keeps ignoring it, for up to 90 minutes in one logged case; it is still retried, just at a lower rate after the first five minutes
-- (typhosj) ChargeManager: the charging current no longer follows a one-ampere change of its target, so a passing cloud no longer makes it step back and forth every cycle
 - (typhosj) ChargeManager: the automatic 1-/3-phase switching now keeps a real gap between switching up and switching back down - for a 16 A wallbox both thresholds used to be the same value
 - (typhosj) ChargeNOW and ChargeManager now switch each other off instead of both staying on with ChargeNOW silently taking precedence
 - (typhosj) ChargeNOW now ends by itself when the vehicle is unplugged, and, with "stop when the vehicle stops charging" configured, when the vehicle stops drawing power - it used to hold the charge release until the switch was pressed again
@@ -268,8 +261,21 @@ If you enjoyed this project – or are just feeling generous – consider buying
 - (typhosj) ChargeManager: before a charge starts, the automatic phase switching now plans with the start current (10 A) instead of the minimum current - a surplus between the three-phase minimum and the three-phase start (5520 to 6900 W with 8-16 A) kept the charger on three phases, where it never started, although one phase could have charged at full current
 - (typhosj) ChargeManager: a three-phase charge whose surplus no longer carries three phases but still carries one now switches down to one phase instead of being stopped - the shutdown delay ran out before the 3-minute down dwell, so the charge stopped and restarted on one phase instead
 - (typhosj) the info log now reports a phase switch when it is written to the charger; the phase count planned while the charger is held off is only logged at debug level, because it follows the surplus without a dwell and flipped back and forth for hours with a full vehicle connected
-- (typhosj) ChargeManager: a running charge now follows a falling surplus down to the minimum current - the 10 A start current also applied to a running charge, so currents between the minimum and 10 A were never written and the charger stayed at the 10 A written last, drawing the difference from the grid or the home battery until the surplus recovered or the shutdown delay ran out
 - (typhosj) ChargeManager: new optional grid-import state - while the house draws power from the grid during a surplus charge, e.g. because the inverter or the home battery cannot deliver more, the charging current is lowered until the import stops and raised again slowly afterwards
+
+### 1.8.0 (2026-10-04)
+
+- (hombach) added an installation-wide total current budget (maximum total charging current) that caps the summed current of all wallboxes to protect a shared fuse, serving ChargeNOW before ChargeManager and keeping a wallbox without a connected vehicle off so idle wallboxes neither trip the fuse nor starve one that is already charging
+- (hombach) the total current budget now follows the measured charging current: a wallbox that draws less than allowed has its unused current reclaimed after a dwell and handed to the next wallbox, growing back one ampere per cycle when it uses what it gets - reductions are always applied before increases so the summed current never exceeds the fuse
+- (hombach) added concise debug logging for the ChargeManager control loops (surplus sharing, phase switching, total current budget)
+- (hombach) docs: documented the total current budget
+- (typhosj) the phase mode (`psm`) is now only written when the charger reports a different mode instead of every cycle, because it is a stored charger setting
+- (typhosj) ChargeManager: no charge release, charging current or phase switch is sent while no vehicle is plugged in, and an unchanged release or current is no longer re-sent every cycle - each write woke the charger's LEDs
+- (typhosj) the charging current is no longer re-sent every cycle: the charger reports a written `amx` back as 0 and only shows the applied current in `amp`, so the check for an unchanged value never matched
+- (typhosj) the charge release is no longer re-sent on every single cycle while the vehicle reports that it has finished charging - the charger confirms each write and keeps ignoring it, for up to 90 minutes in one logged case; it is still retried, just at a lower rate after the first five minutes
+- (typhosj) ChargeManager: the charging current no longer follows a one-ampere change of its target, so a passing cloud no longer makes it step back and forth every cycle
+- (typhosj) ChargeManager: a running charge now follows a falling surplus down to the minimum current - the 10 A start current also applied to a running charge, so currents between the minimum and 10 A were never written and the charger stayed at the 10 A written last, drawing the difference from the grid or the home battery until the surplus recovered or the shutdown delay ran out
+- (hombach) updated dependencies
 
 ### 1.7.0 (2026-09-18)
 
@@ -302,12 +308,6 @@ If you enjoyed this project – or are just feeling generous – consider buying
 - (hombach) ChargeManager: minimum and maximum surplus charging current are now configurable, with the maximum raised to up to 32 A (#852)
 - (hombach) the configurable maximum charging current now caps ChargeNOW as well
 - (hombach) admin: moved the ChargeManager settings into their own configuration tab, separate from the standard settings
-- (hombach) updated dependencies
-
-### 1.4.1 (2026-08-23)
-
-- (typhosj) refactored the ChargeManager control decision into a deterministic, unit-tested function (#846); behavior unchanged
-- (hombach) fixed vulnerabilities
 - (hombach) updated dependencies
 
 [Older changelogs can be found there](CHANGELOG_OLD.md)
