@@ -938,7 +938,9 @@ export interface FleetPhaseInput {
  * When a wallbox switches phases, the allocation runs again with the new phase count: the switch
  * reaches the charger in this very cycle, and a current sized for the old count withdrew the
  * release on top of the switch (three-phase 3394 W is 4 A, below the minimum; one-phase it is
- * 14 A).
+ * 14 A). A switch up also carries the ramp over at the power charged so far, at least the minimum:
+ * stepping down from the one-phase amperes drew three phases at 15 A, 10.3 kW on 7.1 kW surplus
+ * (2026-10-06 12:26:17). A switch down keeps the amperes, which already lie below the surplus.
  *
  * A wallbox whose shutdown delay runs out while one phase could carry its charge switches down at
  * once instead of stopping: the switch costs the charge a short pause, the stop all of it.
@@ -975,7 +977,16 @@ export function planChargeManagerFleet(
 	if (!switched) {
 		return { decisions, phases };
 	}
-	const switchedParticipants = participants.map((participant, index) => ({ ...participant, phases: phases[index]?.targetPhases || participant.phases }));
+	const switchedParticipants = participants.map((participant, index) => {
+		const targetPhases = phases[index]?.targetPhases || participant.phases;
+		if (targetPhases === participant.phases) {
+			return participant;
+		}
+		// the ramp goes on from the power charged so far, not from the amperes of the old phase count
+		const { currentAmp } = participant.state;
+		const samePower = Math.max(participant.minimumChargeCurrent, Math.floor((currentAmp * participant.phases) / targetPhases));
+		return { ...participant, phases: targetPhases, state: { ...participant.state, currentAmp: Math.min(currentAmp, samePower) } };
+	});
 	return { decisions: decideChargeManagerFleet(shared, switchedParticipants), phases };
 }
 

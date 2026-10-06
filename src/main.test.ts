@@ -1320,6 +1320,37 @@ describe("ChargeManager safety helpers", () => {
 			assert.equal(plan.decisions[0].action, "enable");
 		});
 
+		describe("switching up during a charge", () => {
+			// 2026-10-06 12:26:17: 7100 W, the Zoe on one phase at 16 A; the ramp went down from 16 A one
+			// ampere per cycle, three phases at 15 A drew 10.3 kW for the first cycle
+			const fullSun = { ...shared, solarPower: 7200 };
+			const onePhase: FleetParticipant = { ...zoe, phases: 1, minimumChargeCurrent: 8, state: { currentAmp: 16, shutdownDelay: 0 } };
+			const up = { currentPhases: 1, switchDelay: 0, upDelayCycles: 0 };
+
+			it("starts the three-phase current from the power it charged with, not from the one-phase amperes", () => {
+				const plan = planChargeManagerFleet(fullSun, [onePhase], [up]);
+				assert.equal(plan.phases[0]?.targetPhases, 3);
+				assert.equal(plan.decisions[0].optimalCurrent, 10);
+				// 16 A on one phase is 5 A on three, below the minimum: the switch starts at 8 A and ramps up
+				assert.equal(plan.decisions[0].nextState.currentAmp, 9);
+			});
+
+			it("never draws more than the surplus in the switching cycle", () => {
+				for (const currentAmp of [8, 10, 12, 14, 16]) {
+					const plan = planChargeManagerFleet(fullSun, [{ ...onePhase, state: { currentAmp, shutdownDelay: 0 } }], [up]);
+					assert.equal(plan.phases[0]?.targetPhases, 3);
+					assert.ok(plan.decisions[0].nextState.currentAmp * 3 * 230 <= plan.decisions[0].availablePower, `${currentAmp} A`);
+					assert.ok(plan.decisions[0].nextState.currentAmp >= 8, `${currentAmp} A`);
+				}
+			});
+
+			it("keeps the current when switching down, where the old power lies below the surplus", () => {
+				const plan = planChargeManagerFleet(shared, [zoe], [{ currentPhases: 3, switchDelay: PHASE_SWITCH_DELAY_CYCLES }]);
+				assert.equal(plan.phases[0]?.targetPhases, 1);
+				assert.equal(plan.decisions[0].nextState.currentAmp, 11);
+			});
+		});
+
 		it("keeps the current phase count while the dwell time runs", () => {
 			const plan = planChargeManagerFleet(shared, [zoe], [{ currentPhases: 3, switchDelay: 0 }]);
 			assert.deepEqual(plan.phases[0], { targetPhases: 3, switchDelay: 1 });

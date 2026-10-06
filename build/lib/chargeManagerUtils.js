@@ -354,7 +354,15 @@ function planChargeManagerFleet(shared, participants, phaseInputs) {
     if (!switched) {
         return { decisions, phases };
     }
-    const switchedParticipants = participants.map((participant, index) => ({ ...participant, phases: phases[index]?.targetPhases || participant.phases }));
+    const switchedParticipants = participants.map((participant, index) => {
+        const targetPhases = phases[index]?.targetPhases || participant.phases;
+        if (targetPhases === participant.phases) {
+            return participant;
+        }
+        const { currentAmp } = participant.state;
+        const samePower = Math.max(participant.minimumChargeCurrent, Math.floor((currentAmp * participant.phases) / targetPhases));
+        return { ...participant, phases: targetPhases, state: { ...participant.state, currentAmp: Math.min(currentAmp, samePower) } };
+    });
     return { decisions: decideChargeManagerFleet(shared, switchedParticipants), phases };
 }
 function phaseModeToSend(charge3Phase, enabledPhases) {
