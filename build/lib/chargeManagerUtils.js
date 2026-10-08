@@ -360,8 +360,11 @@ function planChargeManagerFleet(shared, participants, phaseInputs) {
             return participant;
         }
         const { currentAmp } = participant.state;
-        const samePower = Math.max(participant.minimumChargeCurrent, Math.floor((currentAmp * participant.phases) / targetPhases));
-        return { ...participant, phases: targetPhases, state: { ...participant.state, currentAmp: Math.min(currentAmp, samePower) } };
+        const samePower = Math.floor((currentAmp * participant.phases) / targetPhases);
+        const carried = targetPhases > participant.phases
+            ? Math.min(currentAmp, Math.max(participant.minimumChargeCurrent, samePower))
+            : Math.min(samePower, Math.floor(decisions[index].availablePower / exports.PHASE_VOLTAGE / targetPhases), participant.maximumChargeCurrent);
+        return { ...participant, phases: targetPhases, state: { ...participant.state, currentAmp: carried } };
     });
     return { decisions: decideChargeManagerFleet(shared, switchedParticipants), phases };
 }

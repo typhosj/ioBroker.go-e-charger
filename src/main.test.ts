@@ -1343,11 +1343,56 @@ describe("ChargeManager safety helpers", () => {
 					assert.ok(plan.decisions[0].nextState.currentAmp >= 8, `${currentAmp} A`);
 				}
 			});
+		});
 
-			it("keeps the current when switching down, where the old power lies below the surplus", () => {
+		describe("switching down", () => {
+			// 2026-10-07 17:35:29: the Zoe plugged in while the charger still held three phases from the
+			// last charge; the ramp stood at 4 A three-phase, one phase kept the 4 A and ramped one ampere
+			// per cycle towards the 12 A the 2923 W surplus carried
+			const plugIn = { ...shared, solarPower: 2923 };
+			const waiting: FleetParticipant = { ...zoe, minimumChargeCurrent: 8, state: { currentAmp: 4, shutdownDelay: 0 } };
+			const idle = { currentPhases: 3, switchDelay: 0, upDelayCycles: 0, downDelayCycles: 0, waitingForStart: true };
+
+			it("starts one phase at the power the three-phase ramp had reached", () => {
+				const plan = planChargeManagerFleet(plugIn, [waiting], [idle]);
+				assert.equal(plan.phases[0]?.targetPhases, 1);
+				assert.equal(plan.decisions[0].optimalCurrent, 12);
+				assert.equal(plan.decisions[0].nextState.currentAmp, 12);
+				assert.equal(plan.decisions[0].action, "enable");
+			});
+
+			it("goes on from the carried power when the ramp had only just begun", () => {
+				const plan = planChargeManagerFleet(plugIn, [{ ...waiting, state: { currentAmp: 2, shutdownDelay: 0 } }], [idle]);
+				assert.equal(plan.phases[0]?.targetPhases, 1);
+				// 2 A three-phase is 6 A one-phase; the ramp still has to climb to the start current
+				assert.equal(plan.decisions[0].nextState.currentAmp, 7);
+				assert.equal(plan.decisions[0].action, "hold");
+			});
+
+			it("never draws more than the surplus or the maximum in the switching cycle", () => {
+				for (const solarPower of [2400, 2923, 3494, 4000, 5000]) {
+					for (const currentAmp of [0, 1, 4, 8, 10, 16]) {
+						const plan = planChargeManagerFleet({ ...shared, solarPower }, [{ ...waiting, state: { currentAmp, shutdownDelay: 0 } }], [idle]);
+						assert.equal(plan.phases[0]?.targetPhases, 1, `${solarPower} W, ${currentAmp} A`);
+						const next = plan.decisions[0].nextState.currentAmp;
+						assert.ok(next * PHASE_VOLTAGE <= plan.decisions[0].availablePower, `${solarPower} W, ${currentAmp} A: ${next} A`);
+						assert.ok(next <= 16, `${solarPower} W, ${currentAmp} A: ${next} A`);
+					}
+				}
+			});
+
+			it("comes down to the surplus during a charge instead of keeping the three-phase amperes", () => {
+				// the 2026-09-21 hand-over: three phases at 10 A on 3394 W
 				const plan = planChargeManagerFleet(shared, [zoe], [{ currentPhases: 3, switchDelay: PHASE_SWITCH_DELAY_CYCLES }]);
 				assert.equal(plan.phases[0]?.targetPhases, 1);
-				assert.equal(plan.decisions[0].nextState.currentAmp, 11);
+				assert.equal(plan.decisions[0].nextState.currentAmp, 14);
+			});
+
+			it("does not carry an invalid current over", () => {
+				const plan = planChargeManagerFleet(plugIn, [{ ...waiting, state: { currentAmp: NaN, shutdownDelay: 0 } }], [idle]);
+				assert.equal(plan.phases[0]?.targetPhases, 1);
+				assert.equal(plan.decisions[0].nextState.currentAmp, 1);
+				assert.equal(plan.decisions[0].action, "hold");
 			});
 		});
 
@@ -1404,7 +1449,9 @@ describe("ChargeManager safety helpers", () => {
 				const plan = planChargeManagerFleet(day, [waiting], [idle]);
 				assert.equal(plan.phases[0]?.targetPhases, 1);
 				assert.equal(plan.decisions[0].optimalCurrent, 16);
-				assert.equal(plan.decisions[0].nextState.currentAmp, 9);
+				// 8 A three-phase carried over is 24 A one-phase, capped at the maximum: it starts at once
+				assert.equal(plan.decisions[0].nextState.currentAmp, 16);
+				assert.equal(plan.decisions[0].action, "enable");
 			});
 
 			it("keeps three phases once the surplus carries the three-phase start", () => {
@@ -1462,8 +1509,9 @@ describe("ChargeManager safety helpers", () => {
 				assert.equal(decideChargeManagerFleet(surplus(5109), [charging])[0].action, "disable");
 				const plan = planChargeManagerFleet(surplus(5109), [charging], [dwelling]);
 				assert.deepEqual(plan.phases[0], { targetPhases: 1, switchDelay: 0 });
-				assert.equal(plan.decisions[0].action, "hold");
-				assert.deepEqual(plan.decisions[0].nextState, { currentAmp: 8, shutdownDelay: 0 });
+				// 7 A three-phase carried over is 21 A one-phase, capped at the maximum of 16 A (3680 W)
+				assert.equal(plan.decisions[0].action, "enable");
+				assert.deepEqual(plan.decisions[0].nextState, { currentAmp: 16, shutdownDelay: 0 });
 			});
 
 			it("never stops a charge that one phase could carry, however long the down dwell is", () => {
@@ -1496,7 +1544,8 @@ describe("ChargeManager safety helpers", () => {
 			});
 
 			it("writes the minimum on one phase right away once the charger reports the release", () => {
-				const plan = planChargeManagerFleet(surplus(5109), [{ ...charging, released: true }], [dwelling]);
+				// a surplus that carries only the minimum on one phase, below the start current
+				const plan = planChargeManagerFleet(surplus(8 * PHASE_VOLTAGE), [{ ...charging, released: true }], [dwelling]);
 				assert.equal(plan.phases[0]?.targetPhases, 1);
 				assert.equal(plan.decisions[0].action, "enable");
 				assert.equal(plan.decisions[0].nextState.currentAmp, 8);

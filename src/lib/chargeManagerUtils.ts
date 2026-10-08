@@ -940,7 +940,9 @@ export interface FleetPhaseInput {
  * release on top of the switch (three-phase 3394 W is 4 A, below the minimum; one-phase it is
  * 14 A). A switch up also carries the ramp over at the power charged so far, at least the minimum:
  * stepping down from the one-phase amperes drew three phases at 15 A, 10.3 kW on 7.1 kW surplus
- * (2026-10-06 12:26:17). A switch down keeps the amperes, which already lie below the surplus.
+ * (2026-10-06 12:26:17). A switch down carries the power over as well, capped at what the surplus
+ * and the maximum carry on the new phase count: keeping the three-phase amperes left a vehicle
+ * plugged in on stale three phases at 4 A one-phase, a minute short of the start (2026-10-07 17:35:29).
  *
  * A wallbox whose shutdown delay runs out while one phase could carry its charge switches down at
  * once instead of stopping: the switch costs the charge a short pause, the stop all of it.
@@ -984,8 +986,12 @@ export function planChargeManagerFleet(
 		}
 		// the ramp goes on from the power charged so far, not from the amperes of the old phase count
 		const { currentAmp } = participant.state;
-		const samePower = Math.max(participant.minimumChargeCurrent, Math.floor((currentAmp * participant.phases) / targetPhases));
-		return { ...participant, phases: targetPhases, state: { ...participant.state, currentAmp: Math.min(currentAmp, samePower) } };
+		const samePower = Math.floor((currentAmp * participant.phases) / targetPhases);
+		const carried =
+			targetPhases > participant.phases
+				? Math.min(currentAmp, Math.max(participant.minimumChargeCurrent, samePower))
+				: Math.min(samePower, Math.floor(decisions[index].availablePower / PHASE_VOLTAGE / targetPhases), participant.maximumChargeCurrent);
+		return { ...participant, phases: targetPhases, state: { ...participant.state, currentAmp: carried } };
 	});
 	return { decisions: decideChargeManagerFleet(shared, switchedParticipants), phases };
 }
