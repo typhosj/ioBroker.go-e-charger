@@ -26,6 +26,7 @@ import {
 	evaluateBatteryAvailability,
 	holdRejectedRelease,
 	type FleetParticipant,
+	gridFrequencyFromStatus,
 	limitTotalCurrent,
 	IDLE_CHARGE_POWER,
 	type IdleReleaseInput,
@@ -801,6 +802,19 @@ describe("ChargeManager safety helpers", () => {
 			for (const chargingAllowed of [false, null, undefined, 1, "true", Number.NaN]) {
 				assert.equal(withdrawReleaseWithModesOff(chargingAllowed, true), false, `ChargingAllowed ${String(chargingAllowed)}`);
 			}
+		});
+	});
+
+	describe("gridFrequencyFromStatus", () => {
+		it("passes a reported grid frequency through unchanged", () => {
+			assert.equal(gridFrequencyFromStatus(49.98), 49.98);
+			assert.equal(gridFrequencyFromStatus(60.01), 60.01);
+		});
+
+		it("reads 0, missing and malformed values as unknown", () => {
+			[0, -50, null, undefined, Number.NaN, Number.POSITIVE_INFINITY, "50", {}].forEach((fhz, index) => {
+				assert.equal(gridFrequencyFromStatus(fhz), null, `case ${index}`);
+			});
 		});
 	});
 

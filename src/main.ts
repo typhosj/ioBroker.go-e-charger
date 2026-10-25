@@ -26,6 +26,7 @@ import {
 	DEFAULT_RESERVE_POWER,
 	effectiveCurrentDemand,
 	type FleetParticipant,
+	gridFrequencyFromStatus,
 	MAX_CHARGE_CURRENT,
 	evaluateBatteryAvailability,
 	limitTotalCurrent,
@@ -989,8 +990,9 @@ class go_e_charger extends utils.Adapter {
 		if (this.wallboxInfoList[iWB].ChargeState === reason) {
 			return;
 		}
-		this.wallboxInfoList[iWB].ChargeState = reason;
 		await this.projectUtils.checkAndSetValue(`Wallbox_${iWB}.info.chargeState`, reason, `Why the charger is charging or not`, "text");
+		// only remembered once written, so a failed write is retried next cycle
+		this.wallboxInfoList[iWB].ChargeState = reason;
 		this.log.info(`Charger ${iWB}: ${reason}`);
 	}
 
@@ -1445,7 +1447,7 @@ class go_e_charger extends utils.Adapter {
 	async Read_ChargerAPIV2(iWB: number): Promise<void> {
 		await axiosInstance
 			.get(
-				`http://${this.config.wallBoxList[iWB].ipAddress}/api/status?filter=alw,frc,modelStatus,mptwt,acu,eto,amp,rbc,rbt,car,pha,fwv,nrg,psm,typ,trx,ast,ama,cbl,mca,rca,rcr,rcd,rc4,rc5,rc6,rc7,rc8,rc9,rc1,rna,rnm,rne,rn4,rn5,rn6,rn7,rn8,rn9,rn1,eca,ecr,ecd,ec4,ec5,ec6,ec7,ec8,ec9,ec1`,
+				`http://${this.config.wallBoxList[iWB].ipAddress}/api/status?filter=alw,frc,modelStatus,mptwt,acu,eto,amp,rbc,rbt,car,pha,fwv,nrg,psm,typ,fhz,trx,ast,ama,cbl,mca,rca,rcr,rcd,rc4,rc5,rc6,rc7,rc8,rc9,rc1,rna,rnm,rne,rn4,rn5,rn6,rn7,rn8,rn9,rn1,eca,ecr,ecd,ec4,ec5,ec6,ec7,ec8,ec9,ec1`,
 				{
 					transformResponse: r => r,
 				},
@@ -1479,6 +1481,7 @@ class go_e_charger extends utils.Adapter {
 	 * @param status.frc - Force state (0 = neutral, 1 = off, 2 = on).
 	 * @param status.mptwt - Minimum time between two phase switches in milliseconds.
 	 * @param status.typ - Hardware version or type identifier.
+	 * @param status.fhz - Grid frequency in Hz, 0 if unknown
 	 * @param status.trx - Transaction: null = none, 0 = without card, otherwise cardIndex + 1 (API V2 equivalent of V1 uby)
 	 * @param status.ast - Access control state
 	 * @param status.ama - Absolute maximum charging current the charger accepts
@@ -1522,6 +1525,7 @@ class go_e_charger extends utils.Adapter {
 			frc?: number;
 			mptwt?: number;
 			typ: string;
+			fhz?: unknown;
 			trx?: number | null;
 			ast?: string | number;
 			ama?: number;
@@ -1584,6 +1588,10 @@ class go_e_charger extends utils.Adapter {
 		this.wallboxInfoList[iWB].PhaseToggleWaitMs = chargerPauseMs(status.mptwt, DEFAULT_PHASE_TOGGLE_WAIT_MS);
 		this.wallboxInfoList[iWB].Hardware = status.typ;
 		void this.projectUtils.checkAndSetValue(`${basePath}.info.hardwareVersion`, status.typ, `Hardware version of charger`, `info.hardware`);
+		const gridFrequency = gridFrequencyFromStatus(status.fhz);
+		if (gridFrequency !== null) {
+			void this.projectUtils.checkAndSetValueNumber(`${basePath}.Power.GridFrequency`, gridFrequency, `Grid frequency`, "Hz", "value.frequency");
+		}
 		// hardware current caps: absolute max (ama) tightened by the cable coding (cbl, 0 = no cable), plus the min charging current (mca)
 		this.setWallboxHardwareLimits(iWB, this.combineHardwareMax(Number(status.ama), Number(status.cbl)), Number(status.mca), basePath);
 		// access control: 0 = open, 1 = RFID/App required, 2 = electricity price/automatic

@@ -223,7 +223,7 @@ The budget is allocated in priority order: ChargeNOW wallboxes first, then Charg
 
 A value of `0` (default) disables the budget; the adapter then does not enforce a combined limit, so make sure the sum of the per-wallbox maximum currents stays within your installation's capacity.
 
-While the budget is active, the adapter also **follows the actually measured charging current**: if a wallbox draws noticeably less than it is allowed (e.g. a vehicle with a lower onboard-charger limit, a car tapering near full, or temperature derating), its unused current is reclaimed after a few cycles and handed to the next wallbox in priority order. The wallbox keeps a small headroom above its real draw and is offered one ampere more each cycle as long as it uses what it gets, so it can grow back to its limit. To stay safe, a wallbox is only ever throttled *down* to reclaim capacity — its command is never left high while the freed amperes are given away — so the summed current can never exceed the fuse even if a vehicle suddenly ramps back up.
+While the budget is active, the adapter also **follows the actually measured charging current**: if a wallbox draws noticeably less than it is allowed (e.g. a vehicle with a lower onboard-charger limit, a car tapering near full, or temperature derating), its unused current is reclaimed after a few cycles and handed to the next wallbox in priority order. The wallbox keeps a small headroom above its real draw and is offered one ampere more each cycle as long as it uses what it gets, so it can grow back to its limit. To stay safe, a wallbox is only ever throttled _down_ to reclaim capacity — its command is never left high while the freed amperes are given away — so the summed current can never exceed the fuse even if a vehicle suddenly ramps back up.
 
 > This is a conservative per-phase-agnostic model: every ampere counts against one budget regardless of which phase it lands on. It never exceeds the fuse rating, but with loads spread across phases it may leave some capacity unused.
 
@@ -242,6 +242,7 @@ If you enjoyed this project – or are just feeling generous – consider buying
   Placeholder for the next version (at the beginning of the line):
   ### **WORK IN PROGRESS**
 -->
+
 ### **WORK IN PROGRESS**
 
 - (typhosj) ChargeManager: new per-wallbox option to withdraw the charge release when the vehicle draws no power for 5 minutes - vehicles such as the Renault Zoe otherwise stay in charging mode, e.g. in the evening when the battery bonus keeps the release active (reported by a user)
@@ -262,6 +263,13 @@ If you enjoyed this project – or are just feeling generous – consider buying
 - (typhosj) ChargeManager: a three-phase charge whose surplus no longer carries three phases but still carries one now switches down to one phase instead of being stopped - the shutdown delay ran out before the 3-minute down dwell, so the charge stopped and restarted on one phase instead
 - (typhosj) the info log now reports a phase switch when it is written to the charger; the phase count planned while the charger is held off is only logged at debug level, because it follows the surplus without a dwell and flipped back and forth for hours with a full vehicle connected
 - (typhosj) ChargeManager: new optional grid-import state - while the house draws power from the grid during a surplus charge, e.g. because the inverter or the home battery cannot deliver more, the charging current is lowered until the import stops and raised again slowly afterwards
+- (typhosj) new state `Wallbox_X.Power.GridFrequency` shows the grid frequency the charger measures, in Hz; hardware gen 3 and newer with HTTP API v2 enabled only, and it stays empty while the charger reports the frequency as unknown [#898]
+- (hombach) updated dependencies
+
+### 1.8.1 (2026-10-11)
+
+- (typhosj) after an automatic switch from one to three phases the ChargeManager now continues at the power the car was charging with instead of the one-phase current; 16 A on one phase used to become 16 A on three phases (about 11 kW) and came down only one ampere per cycle, drawing the difference from the battery or the grid
+- (typhosj) after an automatic switch from three to one phase the ChargeManager now also continues at the power reached so far, capped at what the surplus carries on one phase; it used to keep the three-phase current, so a car plugged in while the charger still held three phases from the last charge took about a minute longer to start
 
 ### 1.8.0 (2026-10-04)
 
@@ -301,14 +309,6 @@ If you enjoyed this project – or are just feeling generous – consider buying
 - (typhosj) ChargeManager: added home-battery modes (disabled, minimum SoC, battery priority); installations without a home battery no longer need a constant helper state
 - (typhosj) ChargeManager: added a battery SoC hysteresis and an optional maximum SoC age so surplus control stops on stale battery data
 - (hombach) admin: moved the maximum charging current to the standard settings tab and clarified that it is an installation-wide limit of the shared power supply, valid for all wallboxes and both charging modes
-
-### 1.5.0 (2026-08-25)
-
-- (hombach) ChargeManager: grid reserve power and maximum battery bonus are now configurable (defaults 100 W / 2000 W) (#852)
-- (hombach) ChargeManager: minimum and maximum surplus charging current are now configurable, with the maximum raised to up to 32 A (#852)
-- (hombach) the configurable maximum charging current now caps ChargeNOW as well
-- (hombach) admin: moved the ChargeManager settings into their own configuration tab, separate from the standard settings
-- (hombach) updated dependencies
 
 [Older changelogs can be found there](CHANGELOG_OLD.md)
 
