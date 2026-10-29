@@ -16,9 +16,11 @@ import {
 	planningPhases,
 	releaseReadback,
 	calculateOptimalChargeCurrent,
+	type ChargeNowEndInput,
 	type ChargeManagerControllerInput,
 	decideChargeManager,
 	decideChargeManagerFleet,
+	decideChargeNowEnd,
 	decideIdleRelease,
 	decidePhaseSwitch,
 	dropUnchangedChargerCommands,
@@ -41,6 +43,7 @@ import {
 	phaseModeOf,
 	phaseModeToSend,
 	resolvePhaseModeWrite,
+	phaseVoltagesFromNrg,
 	PHASE_VOLTAGE,
 	RELEASE_RETRY_INTERVAL,
 	RELEASE_RETRY_LIMIT,
@@ -811,10 +814,57 @@ describe("ChargeManager safety helpers", () => {
 			assert.equal(gridFrequencyFromStatus(60.01), 60.01);
 		});
 
+		it("rounds the grid frequency to 2 decimal places", () => {
+			assert.equal(gridFrequencyFromStatus(50.1234), 50.12);
+			assert.equal(gridFrequencyFromStatus(49.996), 50);
+		});
+
 		it("reads 0, missing and malformed values as unknown", () => {
 			[0, -50, null, undefined, Number.NaN, Number.POSITIVE_INFINITY, "50", {}].forEach((fhz, index) => {
 				assert.equal(gridFrequencyFromStatus(fhz), null, `case ${index}`);
 			});
+		});
+	});
+
+	describe("phaseVoltagesFromNrg", () => {
+		const PHASE1_ONLY = 0b00001001; // phase 1 in front of and after the contactor
+		const THREE_PHASES = 0b00111111;
+
+		it("reads L1, L2, L3 from nrg slots 0-2", () => {
+			assert.deepEqual(phaseVoltagesFromNrg([231, 229, 233, 1, 0, 0, 0, 0, 0, 0, 0, 0], THREE_PHASES), [231, 229, 233]);
+		});
+
+		it("rounds the phase voltages to 2 decimal places", () => {
+			assert.deepEqual(phaseVoltagesFromNrg([229.456, 230.1, 231.004, 0], THREE_PHASES), [229.46, 230.1, 231]);
+		});
+
+		it("keeps 0 V as a real reading", () => {
+			assert.deepEqual(phaseVoltagesFromNrg([230, 0, 0, 0], PHASE1_ONLY), [230, 0, 0]);
+		});
+
+		it("accepts numeric strings", () => {
+			assert.deepEqual(phaseVoltagesFromNrg(["231", "229", "233", "0"], String(THREE_PHASES)), [231, 229, 233]);
+		});
+
+		it("shows the N voltage as L1 on a single-phase supply with L and N swapped (go-e app logic)", () => {
+			// example status from the official go-e API V1 documentation: pha 8, nrg [2,0,0,235,...]
+			assert.deepEqual(phaseVoltagesFromNrg([2, 0, 0, 235, 0, 0, 0, 0, 0, 0, 0, 0], 8), [235, 0, 0]);
+			assert.deepEqual(phaseVoltagesFromNrg([2, 0, 0, 235], "8"), [235, 0, 0]);
+		});
+
+		it("does not swap in N on a three-phase supply or when N is not higher", () => {
+			assert.deepEqual(phaseVoltagesFromNrg([2, 0, 0, 235], THREE_PHASES), [2, 0, 0]);
+			assert.deepEqual(phaseVoltagesFromNrg([231, 0, 0, 5], PHASE1_ONLY), [231, 0, 0]);
+			assert.deepEqual(phaseVoltagesFromNrg([2, 0, 0, 235], undefined), [2, 0, 0]);
+		});
+
+		it("reads a missing array, missing slots and malformed values as unknown", () => {
+			[undefined, null, "230", {}, 230].forEach((nrg, index) => {
+				assert.deepEqual(phaseVoltagesFromNrg(nrg, THREE_PHASES), [null, null, null], `case ${index}`);
+			});
+			assert.deepEqual(phaseVoltagesFromNrg([230], THREE_PHASES), [230, null, null]);
+			assert.deepEqual(phaseVoltagesFromNrg([-1, Number.NaN, "", 0], THREE_PHASES), [null, null, null]);
+			assert.deepEqual(phaseVoltagesFromNrg([null, "abc", {}, 0], THREE_PHASES), [null, null, null]);
 		});
 	});
 
@@ -2219,6 +2269,78 @@ describe("ChargeManager safety helpers", () => {
 		it("never waits less than one cycle and survives a corrupt delay counter", () => {
 			assert.equal(decideIdleRelease(input({ delayCycles: 0 })).withdraw, true);
 			assert.equal(decideIdleRelease(input({ delayCycles: 2, state: { idleDelay: Number.NaN, latched: false } })).withdraw, false);
+		});
+	});
+
+	describe("decideChargeNowEnd", () => {
+		const fresh = { sawVehicle: false, idleDelay: 0 };
+		function input(overrides: Partial<ChargeNowEndInput> = {}): ChargeNowEndInput {
+			return { carState: 2, stopWhenCarIdle: true, releaseActive: true, chargePower: 7000, delayCycles: 3, state: fresh, ...overrides };
+		}
+
+		it("keeps waiting while no vehicle was plugged in yet", () => {
+			// switching ChargeNOW on and plugging in a moment later is the normal order of operations
+			assert.deepEqual(decideChargeNowEnd(input({ carState: 1 })), { end: null, nextState: fresh });
+		});
+
+		it("ends the session when the vehicle is unplugged", () => {
+			const decision = decideChargeNowEnd(input({ carState: 1, state: { sawVehicle: true, idleDelay: 0 } }));
+			assert.deepEqual(decision, { end: "unplugged", nextState: fresh });
+		});
+
+		it("remembers a plugged-in vehicle in every connected car state", () => {
+			for (const carState of [2, 3, 4]) {
+				assert.equal(decideChargeNowEnd(input({ carState })).nextState.sawVehicle, true, `car ${carState}`);
+			}
+		});
+
+		it("does not count an unknown car state as a vehicle", () => {
+			// a failed read reports car state 0; it must not turn the next "no vehicle" into an unplug
+			for (const carState of [0, 5, Number.NaN]) {
+				assert.deepEqual(decideChargeNowEnd(input({ carState })), { end: null, nextState: fresh }, `car ${carState}`);
+			}
+		});
+
+		it("keeps a running session across an unknown car state", () => {
+			const decision = decideChargeNowEnd(input({ carState: 0, chargePower: 0, state: { sawVehicle: true, idleDelay: 2 } }));
+			assert.deepEqual(decision, { end: null, nextState: { sawVehicle: true, idleDelay: 0 } });
+		});
+
+		it("ends the session once the vehicle drew no power for the whole idle delay", () => {
+			let state = fresh;
+			const ends: (string | null)[] = [];
+			for (let cycle = 0; cycle < 3; cycle++) {
+				const decision = decideChargeNowEnd(input({ carState: 4, chargePower: 0, state }));
+				ends.push(decision.end);
+				state = decision.nextState;
+			}
+			assert.deepEqual(ends, [null, null, "idle"]);
+			assert.deepEqual(state, fresh);
+		});
+
+		it("rides out the short car state 4 of a phase switch", () => {
+			let state = fresh;
+			for (const [carState, chargePower] of [
+				[2, 4100],
+				[4, 0],
+				[4, 0],
+				[2, 4100],
+			] as const) {
+				const decision = decideChargeNowEnd(input({ carState, chargePower, state }));
+				assert.equal(decision.end, null);
+				state = decision.nextState;
+			}
+			assert.deepEqual(state, { sawVehicle: true, idleDelay: 0 });
+		});
+
+		it("never ends an idle session without stopWhenCarIdle", () => {
+			const decision = decideChargeNowEnd(input({ carState: 4, chargePower: 0, stopWhenCarIdle: false, state: { sawVehicle: true, idleDelay: 2 } }));
+			assert.deepEqual(decision, { end: null, nextState: { sawVehicle: true, idleDelay: 0 } });
+		});
+
+		it("never counts a missing power reading as idle", () => {
+			const decision = decideChargeNowEnd(input({ carState: 4, chargePower: Number.NaN, state: { sawVehicle: true, idleDelay: 2 } }));
+			assert.equal(decision.end, null);
 		});
 	});
 });

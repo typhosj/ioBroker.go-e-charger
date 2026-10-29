@@ -26,10 +26,12 @@ exports.phaseModeToSend = phaseModeToSend;
 exports.resolvePhaseModeWrite = resolvePhaseModeWrite;
 exports.phaseModeOf = phaseModeOf;
 exports.decideIdleRelease = decideIdleRelease;
+exports.decideChargeNowEnd = decideChargeNowEnd;
 exports.chargePowerFromStatusV1 = chargePowerFromStatusV1;
 exports.isVehicleDisconnected = isVehicleDisconnected;
 exports.withdrawReleaseWithModesOff = withdrawReleaseWithModesOff;
 exports.gridFrequencyFromStatus = gridFrequencyFromStatus;
+exports.phaseVoltagesFromNrg = phaseVoltagesFromNrg;
 exports.updateReleaseRejects = updateReleaseRejects;
 exports.holdRejectedRelease = holdRejectedRelease;
 exports.dropUnchangedChargerCommands = dropUnchangedChargerCommands;
@@ -410,6 +412,30 @@ function decideIdleRelease(input) {
     }
     return { withdraw: false, nextState: { idleDelay, latched: false } };
 }
+function decideChargeNowEnd(input) {
+    const fresh = { sawVehicle: false, idleDelay: 0 };
+    if (isVehicleDisconnected(input.carState)) {
+        return { end: input.state.sawVehicle ? "unplugged" : null, nextState: fresh };
+    }
+    if (input.carState !== 2 && input.carState !== 3 && input.carState !== 4) {
+        return { end: null, nextState: { ...input.state, idleDelay: 0 } };
+    }
+    if (!input.stopWhenCarIdle) {
+        return { end: null, nextState: { sawVehicle: true, idleDelay: 0 } };
+    }
+    const idle = decideIdleRelease({
+        releaseActive: input.releaseActive,
+        carState: input.carState,
+        chargePower: input.chargePower,
+        controllerAction: "enable",
+        delayCycles: input.delayCycles,
+        state: { idleDelay: input.state.idleDelay, latched: false },
+    });
+    if (idle.withdraw) {
+        return { end: "idle", nextState: fresh };
+    }
+    return { end: null, nextState: { sawVehicle: true, idleDelay: idle.nextState.idleDelay } };
+}
 function chargePowerFromStatusV1(nrg) {
     if (!Array.isArray(nrg) || nrg.length < 12) {
         return Number.NaN;
@@ -428,7 +454,21 @@ function withdrawReleaseWithModesOff(chargingAllowed, releasedByAdapter) {
     return releasedByAdapter === true && chargingAllowed === true;
 }
 function gridFrequencyFromStatus(fhz) {
-    return typeof fhz === "number" && Number.isFinite(fhz) && fhz > 0 ? fhz : null;
+    return typeof fhz === "number" && Number.isFinite(fhz) && fhz > 0 ? Math.round(fhz * 100) / 100 : null;
+}
+function phaseVoltagesFromNrg(nrg, pha) {
+    const voltage = (index) => {
+        const raw = Array.isArray(nrg) ? nrg[index] : undefined;
+        const value = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : raw;
+        return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value * 100) / 100 : null;
+    };
+    let l1 = voltage(0);
+    const neutral = voltage(3);
+    const phaseFlags = Number(pha);
+    if (Number.isInteger(phaseFlags) && Math.floor(phaseFlags / 8) === 1 && l1 !== null && neutral !== null && neutral > l1) {
+        l1 = neutral;
+    }
+    return [l1, voltage(1), voltage(2)];
 }
 exports.CAR_STATE_FINISHED = 4;
 exports.RELEASE_RETRY_LIMIT = 30;

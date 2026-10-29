@@ -1104,6 +1104,70 @@ export function decideIdleRelease(input: IdleReleaseInput): { withdraw: boolean;
 	return { withdraw: false, nextState: { idleDelay, latched: false } };
 }
 
+/** ChargeNOW session tracking carried between control cycles. */
+export interface ChargeNowSessionState {
+	/** Whether a vehicle was connected at any point of the running session */
+	sawVehicle: boolean;
+	/** Consecutive cycles the connected vehicle drew no power */
+	idleDelay: number;
+}
+
+/** Inputs for one ChargeNOW end decision. */
+export interface ChargeNowEndInput {
+	/** go-e car state (1 = no car, 2 = charging, 3 = waiting for car, 4 = charge finished) */
+	carState: number;
+	/** Whether the wallbox is configured to stop when the vehicle stops charging */
+	stopWhenCarIdle: boolean;
+	/** Whether the charger currently reports an active charge release */
+	releaseActive: boolean;
+	/** Measured charging power in watts */
+	chargePower: number;
+	/** Cycles the vehicle may draw no power before the session ends */
+	delayCycles: number;
+	/** State from the previous cycle */
+	state: ChargeNowSessionState;
+}
+
+/**
+ * Decides whether a running ChargeNOW session has done its job. Without this, ChargeNOW held the
+ * charge release until someone switched it off - on 2026-09-19 46 minutes past the end of the
+ * charge - and the next vehicle plugged in started charging at the full ChargeNOW current.
+ *
+ * Two things end a session: the vehicle was unplugged, and, with `stopWhenCarIdle`, a vehicle
+ * that drew no power for the whole idle delay, which is what a full battery looks like from the
+ * charger. The delay rides out the car state 4 a one-/three-phase switch reports for a moment.
+ * "No vehicle" only counts as unplugged once a vehicle was seen in the session, since switching
+ * ChargeNOW on and plugging in a moment later is the normal order of operations.
+ *
+ * @param input Measurements, configuration and previous state
+ * @returns Why the session ends now (`null` = it goes on), and the state for the next cycle
+ */
+export function decideChargeNowEnd(input: ChargeNowEndInput): { end: "unplugged" | "idle" | null; nextState: ChargeNowSessionState } {
+	const fresh = { sawVehicle: false, idleDelay: 0 };
+	if (isVehicleDisconnected(input.carState)) {
+		return { end: input.state.sawVehicle ? "unplugged" : null, nextState: fresh };
+	}
+	if (input.carState !== 2 && input.carState !== 3 && input.carState !== 4) {
+		// unknown car state, e.g. after a failed read - neither a vehicle nor an unplug
+		return { end: null, nextState: { ...input.state, idleDelay: 0 } };
+	}
+	if (!input.stopWhenCarIdle) {
+		return { end: null, nextState: { sawVehicle: true, idleDelay: 0 } };
+	}
+	const idle = decideIdleRelease({
+		releaseActive: input.releaseActive,
+		carState: input.carState,
+		chargePower: input.chargePower,
+		controllerAction: "enable",
+		delayCycles: input.delayCycles,
+		state: { idleDelay: input.state.idleDelay, latched: false },
+	});
+	if (idle.withdraw) {
+		return { end: "idle", nextState: fresh };
+	}
+	return { end: null, nextState: { sawVehicle: true, idleDelay: idle.nextState.idleDelay } };
+}
+
 /**
  * Charging power in watts from the API V1 `nrg` array, whose total power (index 11) is given in
  * units of 10 W.
@@ -1165,7 +1229,39 @@ export function withdrawReleaseWithModesOff(chargingAllowed: unknown, releasedBy
  * @returns frequency in Hz, or `null` when unknown
  */
 export function gridFrequencyFromStatus(fhz: unknown): number | null {
-	return typeof fhz === "number" && Number.isFinite(fhz) && fhz > 0 ? fhz : null;
+	return typeof fhz === "number" && Number.isFinite(fhz) && fhz > 0 ? Math.round(fhz * 100) / 100 : null;
+}
+
+/**
+ * Voltages of the three grid phases L1, L2, L3 from the charger's energy array (API V1 key `nrg`:
+ * slots 0-2 = L1-L3, slot 3 = N, all in V).
+ *
+ * Follows the go-e app logic from the official API V1 documentation: when only phase 1 is present
+ * in front of the contactor (`Math.floor(pha / 8) === 1`) and N reads higher than L1, the supply is
+ * single-phase with L and N swapped, and the N voltage is shown as L1.
+ *
+ * 0 V is a real reading (e.g. a phase that is not connected on a single-phase supply) and is kept.
+ * A missing array, a missing slot and any negative or malformed value read as unknown for that
+ * phase, so no made-up voltage is ever published.
+ *
+ * @param nrg raw `nrg` value from the API V1 status
+ * @param pha raw `pha` value from the API V1 status (phase flags before and after the contactor)
+ * @returns voltages of L1, L2, L3 in V, each `null` when unknown
+ */
+export function phaseVoltagesFromNrg(nrg: unknown, pha: unknown): [number | null, number | null, number | null] {
+	const voltage = (index: number): number | null => {
+		const raw: unknown = Array.isArray(nrg) ? nrg[index] : undefined;
+		// API V1 values may arrive as numeric strings; the go-e app parses them the same way
+		const value = typeof raw === "string" && raw.trim() !== "" ? Number(raw) : raw;
+		return typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value * 100) / 100 : null;
+	};
+	let l1 = voltage(0);
+	const neutral = voltage(3);
+	const phaseFlags = Number(pha);
+	if (Number.isInteger(phaseFlags) && Math.floor(phaseFlags / 8) === 1 && l1 !== null && neutral !== null && neutral > l1) {
+		l1 = neutral;
+	}
+	return [l1, voltage(1), voltage(2)];
 }
 
 /** go-e car state for a vehicle that is plugged in and has finished charging */

@@ -7,6 +7,7 @@ import {
 	buildChargerCommands,
 	chargePowerFromStatusV1,
 	type ChargeManagerDecision,
+	decideChargeNowEnd,
 	decideIdleRelease,
 	planChargeManagerFleet,
 	seedChargeManagerState,
@@ -39,6 +40,7 @@ import {
 	resolveWallboxCurrentLimits,
 	updateReleaseRejects,
 	withdrawReleaseWithModesOff,
+	phaseVoltagesFromNrg,
 	IDLE_RELEASE_DELAY_MS,
 	PHASE_MODE_AUTO,
 	phaseModeOf,
@@ -325,6 +327,10 @@ class go_e_charger extends utils.Adapter {
 
 				this.wallboxInfoList[iWB].ChargeNOW = await this.projectUtils.getStateValue(`Wallbox_${iWB}.Settings.ChargeNOW`); // Get charging override trigger
 				this.wallboxInfoList[iWB].ChargeManager = await this.projectUtils.getStateValue(`Wallbox_${iWB}.Settings.ChargeManager`); // Get enable for charge manager
+				if (this.wallboxInfoList[iWB].ChargeNOW) {
+					// both on is left over from before the modes were exclusive; ChargeNOW used to win
+					this.switchOffOtherMode(iWB, "ChargeManager", "ChargeNOW");
+				}
 				this.wallboxInfoList[iWB].ChargeCurrent = await this.projectUtils.getStateValue(`Wallbox_${iWB}.Settings.ChargeCurrent`); // Get current for charging override
 				this.wallboxInfoList[iWB].Charge3Phase = await this.projectUtils.getStateValue(`Wallbox_${iWB}.Settings.Charge3Phase`); // Get enable of 3 phases for charging override
 
@@ -451,8 +457,7 @@ class go_e_charger extends utils.Adapter {
 										case "ChargeNOW":
 											if (typeof state.val === "boolean") {
 												this.wallboxInfoList[chargerNo].ChargeNOW = state.val;
-												this.wallboxInfoList[chargerNo].ChargeNowIdleDelay = 0;
-												this.wallboxInfoList[chargerNo].ChargeNowSawVehicle = false;
+												this.resetChargeNowSession(chargerNo);
 												this.log.debug(`settings state changed to ChargeNOW: ${this.wallboxInfoList[chargerNo].ChargeNOW}`);
 												void this.setState(id, state.val, true);
 												if (state.val) {
@@ -667,6 +672,10 @@ class go_e_charger extends utils.Adapter {
 				if (this.wallboxInfoList[iWB].HardwareMin3) {
 					await this.Read_ChargerAPIV2(iWB);
 				}
+				if (this.wallboxInfoList[iWB].ChargeNOW) {
+					// before the planning, so a ChargeNOW that ends here is handled like one switched off
+					await this.endChargeNowWhenDone(iWB);
+				}
 			}
 
 			// the PV surplus is a single shared resource - split it across all ChargeManager
@@ -701,10 +710,6 @@ class go_e_charger extends utils.Adapter {
 				// neither trips the fuse when a car is plugged in nor starves a charger that already charges.
 				const hasVehicle = info.CarState === 2 || info.CarState === 3;
 
-				if (info.ChargeNOW) {
-					// may clear ChargeNOW, so the branches below then withdraw the release in the same cycle
-					await this.autoStopChargeNow(iWB);
-				}
 				if (!info.ChargeManager || info.ChargeNOW) {
 					this.resetIdleRelease(iWB);
 					this.wallboxInfoList[iWB].ChargeManagerRunning = false;
@@ -811,12 +816,7 @@ class go_e_charger extends utils.Adapter {
 				} else {
 					// both modes off: if the adapter previously enabled charging, switch it off again
 					await this.setChargeState(iWB, `ChargeNOW and ChargeManager are both switched off`);
-					if (
-						withdrawReleaseWithModesOff(
-							await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.ChargingAllowed`),
-							this.wallboxInfoList[iWB].ReleasedByAdapter,
-						)
-					) {
+					if (withdrawReleaseWithModesOff(await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.ChargingAllowed`), info.ReleasedByAdapter)) {
 						this.wallboxInfoList[iWB].SetAmp = 0;
 						await this.Charge_Config("0", this.wallboxInfoList[iWB].MinAmp, `Deactivate go-eCharger`, iWB);
 					}
@@ -975,8 +975,87 @@ class go_e_charger extends utils.Adapter {
 	}
 
 	/**
-	 * Publishes why the charger is doing what it is doing this cycle, and logs every change of that
-	 * reason once.
+	 * Clears the idle-release delay and latch, so the next charge starts with the full delay again.
+	 *
+	 * @param iWB - Index of the wallbox in the configuration list (`wallBoxList`)
+	 */
+	private resetIdleRelease(iWB: number): void {
+		this.wallboxInfoList[iWB].IdleReleaseDelay = 0;
+		this.wallboxInfoList[iWB].IdleReleaseLatched = false;
+	}
+
+	/**
+	 * Starts the ChargeNOW session tracking from scratch.
+	 *
+	 * @param iWB - Index of the wallbox in the configuration list (`wallBoxList`)
+	 */
+	private resetChargeNowSession(iWB: number): void {
+		this.wallboxInfoList[iWB].ChargeNowSawVehicle = false;
+		this.wallboxInfoList[iWB].ChargeNowIdleDelay = 0;
+	}
+
+	/**
+	 * Switches off the mode the user did not just enable. ChargeNOW and ChargeManager are mutually
+	 * exclusive: ChargeNOW always won silently, which left both switches on without a hint which of
+	 * them drove the charger, and switching ChargeNOW off handed the charger back to a ChargeManager
+	 * the user may have long forgotten about.
+	 *
+	 * @param iWB - Index of the wallbox in the configuration list (`wallBoxList`)
+	 * @param mode - The mode to switch off
+	 * @param enabledMode - The mode the user just enabled, for the log message
+	 */
+	private switchOffOtherMode(iWB: number, mode: "ChargeNOW" | "ChargeManager", enabledMode: string): void {
+		if (!this.wallboxInfoList[iWB][mode]) {
+			return;
+		}
+		this.wallboxInfoList[iWB][mode] = false;
+		this.resetChargeNowSession(iWB);
+		void this.setState(`Wallbox_${iWB}.Settings.${mode}`, false, true);
+		this.log.info(`Charger ${iWB}: ${mode} switched off because ${enabledMode} was enabled`);
+	}
+
+	/**
+	 * Switches ChargeNOW off once it has done its job - the vehicle was unplugged or, with
+	 * `stopWhenCarIdle`, stopped drawing power (see {@link decideChargeNowEnd}). The release it held
+	 * is then withdrawn by the branch for both modes off, in the same cycle.
+	 *
+	 * @param iWB - Index of the wallbox in the configuration list (`wallBoxList`)
+	 */
+	private async endChargeNowWhenDone(iWB: number): Promise<void> {
+		const info = this.wallboxInfoList[iWB];
+		const decision = decideChargeNowEnd({
+			carState: info.CarState,
+			stopWhenCarIdle: !!this.config.wallBoxList[iWB].stopWhenCarIdle,
+			releaseActive: info.Reported.alw === 1,
+			chargePower: info.ChargePower,
+			delayCycles: Math.ceil(IDLE_RELEASE_DELAY_MS / this.config.cycleTime),
+			state: { sawVehicle: info.ChargeNowSawVehicle, idleDelay: info.ChargeNowIdleDelay },
+		});
+		info.ChargeNowSawVehicle = decision.nextState.sawVehicle;
+		info.ChargeNowIdleDelay = decision.nextState.idleDelay;
+		if (decision.end === null) {
+			return;
+		}
+		info.ChargeNOW = false;
+		await this.setState(`Wallbox_${iWB}.Settings.ChargeNOW`, false, true);
+		this.log.info(
+			`Charger ${iWB}: ChargeNOW switched off - ${decision.end === "unplugged" ? `vehicle unplugged` : `vehicle stopped drawing power, battery full or charge ended`}`,
+		);
+	}
+
+	private async stopChargeManager(reason: string, iWB: number): Promise<void> {
+		this.wallboxInfoList[iWB].SetAmp = 0;
+		this.wallboxInfoList[iWB].DelayOff = 0;
+		this.resetIdleRelease(iWB);
+		await this.setChargeState(iWB, reason);
+		if ((await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.ChargingAllowed`)) == true) {
+			await this.Charge_Config("0", this.wallboxInfoList[iWB].MinAmp, reason, iWB);
+		}
+	}
+
+	/**
+	 * Publishes why the charger is charging or not this cycle, and logs every change of that reason
+	 * once.
 	 *
 	 * Most of these reasons used to reach the log only when they happened to coincide with a write
 	 * to the charger, so a charger that simply never started - because the home battery is below
@@ -994,96 +1073,6 @@ class go_e_charger extends utils.Adapter {
 		// only remembered once written, so a failed write is retried next cycle
 		this.wallboxInfoList[iWB].ChargeState = reason;
 		this.log.info(`Charger ${iWB}: ${reason}`);
-	}
-
-	private resetIdleRelease(iWB: number): void {
-		this.wallboxInfoList[iWB].IdleReleaseDelay = 0;
-		this.wallboxInfoList[iWB].IdleReleaseLatched = false;
-	}
-
-	/**
-	 * Switches off the charging mode that the user did not just enable. ChargeNOW and ChargeManager
-	 * are mutually exclusive - ChargeNOW always won silently, which left both switches on in the UI
-	 * without a hint which of the two was actually driving the charger.
-	 *
-	 * @param iWB - Index of the wallbox in the configuration list (`wallBoxList`)
-	 * @param mode - The mode to switch off
-	 * @param enabledMode - The mode the user just enabled, for the log message
-	 */
-	private switchOffOtherMode(iWB: number, mode: "ChargeNOW" | "ChargeManager", enabledMode: string): void {
-		if (!this.wallboxInfoList[iWB][mode]) {
-			return;
-		}
-		this.wallboxInfoList[iWB][mode] = false;
-		if (mode === "ChargeNOW") {
-			this.wallboxInfoList[iWB].ChargeNowIdleDelay = 0;
-			this.wallboxInfoList[iWB].ChargeNowSawVehicle = false;
-		}
-		void this.setState(`Wallbox_${iWB}.Settings.${mode}`, false, true);
-		this.log.info(`Charger ${iWB}: ${mode} switched off because ${enabledMode} was enabled`);
-	}
-
-	/**
-	 * Ends a running ChargeNOW when it has done its job, so the charge release is not held until
-	 * someone presses the switch again. Two reasons end it: the vehicle was unplugged, and - only
-	 * with `stopWhenCarIdle` configured - a connected vehicle that stopped drawing power for
-	 * {@link IDLE_RELEASE_DELAY_MS}, which is what a full battery looks like from the charger.
-	 *
-	 * The delay matters: a one-/three-phase switch briefly puts the charger into car state 4 as
-	 * well, so an immediate stop on "charge finished" would cancel ChargeNOW on every phase switch.
-	 *
-	 * @param iWB - Index of the wallbox in the configuration list (`wallBoxList`)
-	 */
-	private async autoStopChargeNow(iWB: number): Promise<void> {
-		if (isVehicleDisconnected(this.wallboxInfoList[iWB].CarState)) {
-			// before the first vehicle of this session "no vehicle" means ChargeNOW is still waiting
-			// for one - enabling it and plugging in a moment later is the normal order of operations
-			if (this.wallboxInfoList[iWB].ChargeNowSawVehicle) {
-				await this.stopChargeNow(iWB, `vehicle unplugged`);
-			}
-			return;
-		}
-		this.wallboxInfoList[iWB].ChargeNowSawVehicle = true;
-		if (!this.config.wallBoxList[iWB].stopWhenCarIdle) {
-			this.wallboxInfoList[iWB].ChargeNowIdleDelay = 0;
-			return;
-		}
-		const idle = decideIdleRelease({
-			releaseActive: (await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.ChargingAllowed`)) == true,
-			carState: this.wallboxInfoList[iWB].CarState,
-			chargePower: Number(this.wallboxInfoList[iWB].ChargePower),
-			controllerAction: "enable",
-			delayCycles: Math.ceil(IDLE_RELEASE_DELAY_MS / this.config.cycleTime),
-			state: { idleDelay: this.wallboxInfoList[iWB].ChargeNowIdleDelay, latched: false },
-		});
-		this.wallboxInfoList[iWB].ChargeNowIdleDelay = idle.nextState.idleDelay;
-		if (idle.withdraw) {
-			await this.stopChargeNow(iWB, `vehicle stopped drawing power - battery full or charging ended`);
-		}
-	}
-
-	/**
-	 * Switches ChargeNOW off and withdraws the charge release it was holding.
-	 *
-	 * @param iWB - Index of the wallbox in the configuration list (`wallBoxList`)
-	 * @param reason - Why ChargeNOW ended, for the log message
-	 */
-	private async stopChargeNow(iWB: number, reason: string): Promise<void> {
-		this.wallboxInfoList[iWB].ChargeNOW = false;
-		this.wallboxInfoList[iWB].ChargeNowIdleDelay = 0;
-		this.wallboxInfoList[iWB].ChargeNowSawVehicle = false;
-		await this.setState(`Wallbox_${iWB}.Settings.ChargeNOW`, false, true);
-		this.log.info(`Charger ${iWB}: ChargeNOW switched off - ${reason}`);
-	}
-
-	private async stopChargeManager(reason: string, iWB: number): Promise<void> {
-		this.wallboxInfoList[iWB].SetAmp = 0;
-		this.wallboxInfoList[iWB].DelayOff = 0;
-		this.resetIdleRelease(iWB);
-		await this.setChargeState(iWB, reason);
-		if ((await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.ChargingAllowed`)) == true) {
-			await this.Charge_Config("0", this.wallboxInfoList[iWB].MinAmp, reason, iWB);
-		}
 	}
 
 	/**
@@ -1293,6 +1282,17 @@ class go_e_charger extends utils.Adapter {
 			"A",
 			"value.current",
 		);
+		phaseVoltagesFromNrg(status.nrg, status.pha).forEach((voltage, index) => {
+			if (voltage !== null) {
+				void this.projectUtils.checkAndSetValueNumber(
+					`${basePath}.Power.VoltageL${index + 1}`,
+					voltage,
+					`Measured voltage of grid phase L${index + 1}`,
+					"V",
+					"value.voltage",
+				);
+			}
+		});
 		// actually drawn current, used by the installation budget to reclaim unused capacity (measured loop)
 		this.wallboxInfoList[iWB].MeasuredMaxChargeAmp = Math.round(measuredMaxPhaseCurrent);
 		this.wallboxInfoList[iWB].Firmware = status.fwv;

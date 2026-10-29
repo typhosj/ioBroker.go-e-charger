@@ -202,6 +202,9 @@ class go_e_charger extends utils.Adapter {
                 }
                 this.wallboxInfoList[iWB].ChargeNOW = await this.projectUtils.getStateValue(`Wallbox_${iWB}.Settings.ChargeNOW`);
                 this.wallboxInfoList[iWB].ChargeManager = await this.projectUtils.getStateValue(`Wallbox_${iWB}.Settings.ChargeManager`);
+                if (this.wallboxInfoList[iWB].ChargeNOW) {
+                    this.switchOffOtherMode(iWB, "ChargeManager", "ChargeNOW");
+                }
                 this.wallboxInfoList[iWB].ChargeCurrent = await this.projectUtils.getStateValue(`Wallbox_${iWB}.Settings.ChargeCurrent`);
                 this.wallboxInfoList[iWB].Charge3Phase = await this.projectUtils.getStateValue(`Wallbox_${iWB}.Settings.Charge3Phase`);
                 const phaseModeId = `Wallbox_${iWB}.Settings.PhaseMode`;
@@ -288,8 +291,7 @@ class go_e_charger extends utils.Adapter {
                                         case "ChargeNOW":
                                             if (typeof state.val === "boolean") {
                                                 this.wallboxInfoList[chargerNo].ChargeNOW = state.val;
-                                                this.wallboxInfoList[chargerNo].ChargeNowIdleDelay = 0;
-                                                this.wallboxInfoList[chargerNo].ChargeNowSawVehicle = false;
+                                                this.resetChargeNowSession(chargerNo);
                                                 this.log.debug(`settings state changed to ChargeNOW: ${this.wallboxInfoList[chargerNo].ChargeNOW}`);
                                                 void this.setState(id, state.val, true);
                                                 if (state.val) {
@@ -479,6 +481,9 @@ class go_e_charger extends utils.Adapter {
                 if (this.wallboxInfoList[iWB].HardwareMin3) {
                     await this.Read_ChargerAPIV2(iWB);
                 }
+                if (this.wallboxInfoList[iWB].ChargeNOW) {
+                    await this.endChargeNowWhenDone(iWB);
+                }
             }
             const chargePlans = await this.planChargeManagerCycle();
             const budgetActive = maxAmpTotal > 0;
@@ -496,9 +501,6 @@ class go_e_charger extends utils.Adapter {
             for (const iWB of applyOrder) {
                 const info = this.wallboxInfoList[iWB];
                 const hasVehicle = info.CarState === 2 || info.CarState === 3;
-                if (info.ChargeNOW) {
-                    await this.autoStopChargeNow(iWB);
-                }
                 if (!info.ChargeManager || info.ChargeNOW) {
                     this.resetIdleRelease(iWB);
                     this.wallboxInfoList[iWB].ChargeManagerRunning = false;
@@ -597,7 +599,7 @@ class go_e_charger extends utils.Adapter {
                 }
                 else {
                     await this.setChargeState(iWB, `ChargeNOW and ChargeManager are both switched off`);
-                    if ((0, chargeManagerUtils_1.withdrawReleaseWithModesOff)(await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.ChargingAllowed`), this.wallboxInfoList[iWB].ReleasedByAdapter)) {
+                    if ((0, chargeManagerUtils_1.withdrawReleaseWithModesOff)(await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.ChargingAllowed`), info.ReleasedByAdapter)) {
                         this.wallboxInfoList[iWB].SetAmp = 0;
                         await this.Charge_Config("0", this.wallboxInfoList[iWB].MinAmp, `Deactivate go-eCharger`, iWB);
                     }
@@ -672,61 +674,41 @@ class go_e_charger extends utils.Adapter {
         }
         return value;
     }
-    async setChargeState(iWB, reason) {
-        if (this.wallboxInfoList[iWB].ChargeState === reason) {
-            return;
-        }
-        await this.projectUtils.checkAndSetValue(`Wallbox_${iWB}.info.chargeState`, reason, `Why the charger is charging or not`, "text");
-        this.wallboxInfoList[iWB].ChargeState = reason;
-        this.log.info(`Charger ${iWB}: ${reason}`);
-    }
     resetIdleRelease(iWB) {
         this.wallboxInfoList[iWB].IdleReleaseDelay = 0;
         this.wallboxInfoList[iWB].IdleReleaseLatched = false;
+    }
+    resetChargeNowSession(iWB) {
+        this.wallboxInfoList[iWB].ChargeNowSawVehicle = false;
+        this.wallboxInfoList[iWB].ChargeNowIdleDelay = 0;
     }
     switchOffOtherMode(iWB, mode, enabledMode) {
         if (!this.wallboxInfoList[iWB][mode]) {
             return;
         }
         this.wallboxInfoList[iWB][mode] = false;
-        if (mode === "ChargeNOW") {
-            this.wallboxInfoList[iWB].ChargeNowIdleDelay = 0;
-            this.wallboxInfoList[iWB].ChargeNowSawVehicle = false;
-        }
+        this.resetChargeNowSession(iWB);
         void this.setState(`Wallbox_${iWB}.Settings.${mode}`, false, true);
         this.log.info(`Charger ${iWB}: ${mode} switched off because ${enabledMode} was enabled`);
     }
-    async autoStopChargeNow(iWB) {
-        if ((0, chargeManagerUtils_1.isVehicleDisconnected)(this.wallboxInfoList[iWB].CarState)) {
-            if (this.wallboxInfoList[iWB].ChargeNowSawVehicle) {
-                await this.stopChargeNow(iWB, `vehicle unplugged`);
-            }
-            return;
-        }
-        this.wallboxInfoList[iWB].ChargeNowSawVehicle = true;
-        if (!this.config.wallBoxList[iWB].stopWhenCarIdle) {
-            this.wallboxInfoList[iWB].ChargeNowIdleDelay = 0;
-            return;
-        }
-        const idle = (0, chargeManagerUtils_1.decideIdleRelease)({
-            releaseActive: (await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.ChargingAllowed`)) == true,
-            carState: this.wallboxInfoList[iWB].CarState,
-            chargePower: Number(this.wallboxInfoList[iWB].ChargePower),
-            controllerAction: "enable",
+    async endChargeNowWhenDone(iWB) {
+        const info = this.wallboxInfoList[iWB];
+        const decision = (0, chargeManagerUtils_1.decideChargeNowEnd)({
+            carState: info.CarState,
+            stopWhenCarIdle: !!this.config.wallBoxList[iWB].stopWhenCarIdle,
+            releaseActive: info.Reported.alw === 1,
+            chargePower: info.ChargePower,
             delayCycles: Math.ceil(chargeManagerUtils_1.IDLE_RELEASE_DELAY_MS / this.config.cycleTime),
-            state: { idleDelay: this.wallboxInfoList[iWB].ChargeNowIdleDelay, latched: false },
+            state: { sawVehicle: info.ChargeNowSawVehicle, idleDelay: info.ChargeNowIdleDelay },
         });
-        this.wallboxInfoList[iWB].ChargeNowIdleDelay = idle.nextState.idleDelay;
-        if (idle.withdraw) {
-            await this.stopChargeNow(iWB, `vehicle stopped drawing power - battery full or charging ended`);
+        info.ChargeNowSawVehicle = decision.nextState.sawVehicle;
+        info.ChargeNowIdleDelay = decision.nextState.idleDelay;
+        if (decision.end === null) {
+            return;
         }
-    }
-    async stopChargeNow(iWB, reason) {
-        this.wallboxInfoList[iWB].ChargeNOW = false;
-        this.wallboxInfoList[iWB].ChargeNowIdleDelay = 0;
-        this.wallboxInfoList[iWB].ChargeNowSawVehicle = false;
+        info.ChargeNOW = false;
         await this.setState(`Wallbox_${iWB}.Settings.ChargeNOW`, false, true);
-        this.log.info(`Charger ${iWB}: ChargeNOW switched off - ${reason}`);
+        this.log.info(`Charger ${iWB}: ChargeNOW switched off - ${decision.end === "unplugged" ? `vehicle unplugged` : `vehicle stopped drawing power, battery full or charge ended`}`);
     }
     async stopChargeManager(reason, iWB) {
         this.wallboxInfoList[iWB].SetAmp = 0;
@@ -736,6 +718,14 @@ class go_e_charger extends utils.Adapter {
         if ((await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.ChargingAllowed`)) == true) {
             await this.Charge_Config("0", this.wallboxInfoList[iWB].MinAmp, reason, iWB);
         }
+    }
+    async setChargeState(iWB, reason) {
+        if (this.wallboxInfoList[iWB].ChargeState === reason) {
+            return;
+        }
+        await this.projectUtils.checkAndSetValue(`Wallbox_${iWB}.info.chargeState`, reason, `Why the charger is charging or not`, "text");
+        this.wallboxInfoList[iWB].ChargeState = reason;
+        this.log.info(`Charger ${iWB}: ${reason}`);
     }
     async Read_ChargerAPIV1(iWB) {
         await axiosInstance
@@ -806,6 +796,11 @@ class go_e_charger extends utils.Adapter {
         const measuredMaxPhaseCurrent = Math.max(...status.nrg.slice(4, 7)) / 10;
         void this.projectUtils.checkAndSetValueNumber(`${basePath}.Power.Charge`, this.wallboxInfoList[iWB].ChargePower, `actual charging-power`, "W", "value.power");
         void this.projectUtils.checkAndSetValueNumber(`${basePath}.Power.MeasuredMaxPhaseCurrent`, measuredMaxPhaseCurrent, `Measured max. current of grid phases`, "A", "value.current");
+        (0, chargeManagerUtils_1.phaseVoltagesFromNrg)(status.nrg, status.pha).forEach((voltage, index) => {
+            if (voltage !== null) {
+                void this.projectUtils.checkAndSetValueNumber(`${basePath}.Power.VoltageL${index + 1}`, voltage, `Measured voltage of grid phase L${index + 1}`, "V", "value.voltage");
+            }
+        });
         this.wallboxInfoList[iWB].MeasuredMaxChargeAmp = Math.round(measuredMaxPhaseCurrent);
         this.wallboxInfoList[iWB].Firmware = status.fwv;
         void this.projectUtils.checkAndSetValue(`${basePath}.info.firmwareVersion`, status.fwv, `Firmware version of charger`, `info.firmware`);

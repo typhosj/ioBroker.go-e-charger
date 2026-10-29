@@ -156,12 +156,14 @@ After the adapter has started, use the writable states below. Replace instance `
 | ------------------------------------------------- | --------------------------------------------------------------- |
 | `go-e-charger.0.Settings.Setpoint_HomeBatSoC`     | Minimum home-battery SoC before surplus charging is allowed     |
 | `go-e-charger.0.Wallbox_0.Settings.ChargeManager` | Enables or disables PV surplus control                          |
-| `go-e-charger.0.Wallbox_0.Settings.ChargeNOW`     | Overrides ChargeManager and forces charging                     |
+| `go-e-charger.0.Wallbox_0.Settings.ChargeNOW`     | Forces charging; switches ChargeManager off                     |
 | `go-e-charger.0.Wallbox_0.Settings.ChargeCurrent` | Current used by ChargeNOW                                       |
 | `go-e-charger.0.Wallbox_0.Settings.Charge3Phase`  | Selects one-phase or three-phase charging on supported hardware |
 | `go-e-charger.0.Wallbox_0.Settings.PhaseMode`     | `1` / `3` fixes the phase count, `0` switches automatically     |
 
-For surplus charging, set `ChargeNOW` to `false` and `ChargeManager` to `true`. When both are enabled, ChargeNOW takes precedence and uses the configured `ChargeCurrent` without considering the available surplus.
+For surplus charging, set `ChargeManager` to `true`. ChargeNOW charges at the configured `ChargeCurrent` without considering the available surplus. The two modes are exclusive: switching one on switches the other off.
+
+ChargeNOW ends by itself and switches off when the vehicle is unplugged, or, with **withdraw release when the vehicle stops charging** enabled for the wallbox, when the vehicle draws no power for 5 minutes. Switching ChargeNOW on before plugging in is fine: it waits for the vehicle without waking the charger.
 
 #### One-phase and three-phase charging
 
@@ -192,10 +194,11 @@ In automatic mode the ChargeManager picks the phase count without changing `Char
 
 | ChargeNOW | ChargeManager | Result                                     |
 | --------- | ------------- | ------------------------------------------ |
-| `false`   | `false`       | Charging is disabled                       |
+| `false`   | `false`       | The adapter does not charge                |
 | `false`   | `true`        | Charging follows the calculated PV surplus |
 | `true`    | `false`       | Forced charging at `ChargeCurrent`         |
-| `true`    | `true`        | ChargeNOW takes precedence                 |
+
+With both modes off, the adapter withdraws only a charge release it gave itself. A charge started from the go-e app, the button on the charger or the charger's own default is left alone.
 
 In read-only mode, these states can still be changed but no resulting control command is sent to the charger.
 
@@ -245,13 +248,11 @@ If you enjoyed this project – or are just feeling generous – consider buying
 
 ### **WORK IN PROGRESS**
 
-- (typhosj) ChargeManager: new per-wallbox option to withdraw the charge release when the vehicle draws no power for 5 minutes - vehicles such as the Renault Zoe otherwise stay in charging mode, e.g. in the evening when the battery bonus keeps the release active (reported by a user)
 - (typhosj) ChargeManager: new state `Settings.PhaseMode` switches between fixed one-phase, fixed three-phase and automatic phase switching at runtime; the instance option now only makes the automatic mode available
 - (typhosj) ChargeManager: the automatic 1-/3-phase switching now keeps a real gap between switching up and switching back down - for a 16 A wallbox both thresholds used to be the same value
 - (typhosj) ChargeNOW and ChargeManager now switch each other off instead of both staying on with ChargeNOW silently taking precedence
 - (typhosj) ChargeNOW now ends by itself when the vehicle is unplugged, and, with "stop when the vehicle stops charging" configured, when the vehicle stops drawing power - it used to hold the charge release until the switch was pressed again
 - (typhosj) ChargeNOW no longer sends anything while it waits for a vehicle to be plugged in, so it cannot wake a sleeping charger
-- (typhosj) new state `Wallbox_X.info.chargeState` explains why the charger is charging or not - waiting for a vehicle, charging the home battery first, not enough surplus, ramping up; the reason is also logged whenever it changes. A charger that simply never started used to leave no trace in the log at all
 - (typhosj) with ChargeNOW and ChargeManager both switched off, the adapter now only withdraws a charge release it gave itself - a charge started from the go-e app, the button or the charger's own default was aborted within seconds, again and again, until the vehicle gave up (Renault Zoe: "check connections")
 - (typhosj) ChargeManager: when it takes over a charger that is already charging, it now continues at the current the vehicle charges with instead of ramping up from 0 A, and no longer inherits the shutdown delay or phase-switch dwell of an earlier run - switching from ChargeNOW to ChargeManager used to withdraw the release and switch phases in the very first cycle
 - (typhosj) ChargeManager: a cycle that switches the phase count now sizes the charging current for the new phase count, so a switch to one phase no longer withdraws the charge release at the same time
@@ -263,7 +264,14 @@ If you enjoyed this project – or are just feeling generous – consider buying
 - (typhosj) ChargeManager: a three-phase charge whose surplus no longer carries three phases but still carries one now switches down to one phase instead of being stopped - the shutdown delay ran out before the 3-minute down dwell, so the charge stopped and restarted on one phase instead
 - (typhosj) the info log now reports a phase switch when it is written to the charger; the phase count planned while the charger is held off is only logged at debug level, because it follows the surplus without a dwell and flipped back and forth for hours with a full vehicle connected
 - (typhosj) ChargeManager: new optional grid-import state - while the house draws power from the grid during a surplus charge, e.g. because the inverter or the home battery cannot deliver more, the charging current is lowered until the import stops and raised again slowly afterwards
+
+### 1.9.0 (2026-10-28)
+
+- (solar0x) new states `Wallbox_X.Power.VoltageL1`, `VoltageL2` and `VoltageL3` show the voltage the charger measures on each grid phase, in V; all hardware generations. As in the go-e app, a single-phase supply with L and N swapped shows its N voltage as L1
 - (typhosj) new state `Wallbox_X.Power.GridFrequency` shows the grid frequency the charger measures, in Hz; hardware gen 3 and newer with HTTP API v2 enabled only, and it stays empty while the charger reports the frequency as unknown [#898]
+- (typhosj) new state `Wallbox_X.info.chargeState` explains why the charger is charging or not - waiting for a vehicle, charging the home battery first, not enough PV surplus, ramping up to the start current, charging, current budget exhausted, both modes off; every change of the reason is also logged once. A charger that never started used to leave no trace in the log, because most of these reasons were only logged together with a write to the charger
+- (typhosj) ChargeManager: new per-wallbox option to withdraw the charge release when the vehicle draws no power for 5 minutes - vehicles such as the Renault Zoe otherwise stay in charging mode, e.g. in the evening when the battery bonus keeps the release active (reported by a user)
+- (hombach) phase voltages and grid frequency are rounded to 2 decimal places
 - (hombach) updated dependencies
 
 ### 1.8.1 (2026-10-11)
@@ -301,14 +309,6 @@ If you enjoyed this project – or are just feeling generous – consider buying
 ### 1.6.1 (2026-09-04)
 
 - (typhosj) fixed: a wallbox whose effective maximum charging current is below 10 A - e.g. an 8 A coded cable or a per-wallbox maximum of 8 A - was rejected as invalid ChargeManager input and never charged from PV surplus. Such a wallbox now starts charging at its own maximum
-
-### 1.6.0 (2026-08-29)
-
-- (hombach) added optional per-wallbox minimum and maximum charging current, applied to both ChargeManager and ChargeNOW and always kept within the installation-wide maximum
-- (hombach) the per-wallbox current limits now also respect the charger's reported hardware caps (absolute max, cable limit, minimum charging current), published as `info.hardwareMaxChargeCurrent` / `info.hardwareMinChargeCurrent`
-- (typhosj) ChargeManager: added home-battery modes (disabled, minimum SoC, battery priority); installations without a home battery no longer need a constant helper state
-- (typhosj) ChargeManager: added a battery SoC hysteresis and an optional maximum SoC age so surplus control stops on stale battery data
-- (hombach) admin: moved the maximum charging current to the standard settings tab and clarified that it is an installation-wide limit of the shared power supply, valid for all wallboxes and both charging modes
 
 [Older changelogs can be found there](CHANGELOG_OLD.md)
 
