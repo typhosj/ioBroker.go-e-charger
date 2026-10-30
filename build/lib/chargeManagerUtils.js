@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEMAND_HEADROOM = exports.RECLAIM_DELAY_CYCLES = exports.DEMAND_DEADBAND = exports.RELEASE_RETRY_INTERVAL = exports.RELEASE_RETRY_LIMIT = exports.CAR_STATE_FINISHED = exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.FORCE_STATE_ON = exports.FORCE_STATE_NEUTRAL = exports.DEFAULT_PHASE_TOGGLE_WAIT_MS = exports.SUPPLY_LIMIT_RELAX_W_PER_MIN = exports.GRID_IMPORT_MIN_MS = exports.GRID_IMPORT_CYCLES = exports.GRID_IMPORT_THRESHOLD_W = exports.CURRENT_DEADBAND = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DOWN_DELAY_MS = exports.PHASE_SWITCH_UP_DELAY_MS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
+exports.DEMAND_HEADROOM = exports.RECLAIM_DELAY_CYCLES = exports.DEMAND_DEADBAND = exports.MAX_AMP_TOTAL = exports.RELEASE_RETRY_INTERVAL = exports.RELEASE_RETRY_LIMIT = exports.CAR_STATE_FINISHED = exports.IDLE_CHARGE_POWER = exports.IDLE_RELEASE_DELAY_MS = exports.PHASE_MODE_AUTO = exports.FORCE_STATE_ON = exports.FORCE_STATE_NEUTRAL = exports.DEFAULT_PHASE_TOGGLE_WAIT_MS = exports.SUPPLY_LIMIT_RELAX_W_PER_MIN = exports.GRID_IMPORT_MIN_MS = exports.GRID_IMPORT_CYCLES = exports.GRID_IMPORT_THRESHOLD_W = exports.CURRENT_DEADBAND = exports.PHASE_SWITCH_HYSTERESIS = exports.PHASE_SWITCH_DOWN_DELAY_MS = exports.PHASE_SWITCH_UP_DELAY_MS = exports.PHASE_SWITCH_DELAY_CYCLES = exports.PHASE_VOLTAGE = exports.DEFAULT_MAXIMUM_BATTERY_BONUS = exports.DEFAULT_RESERVE_POWER = exports.SHUTDOWN_DELAY_CYCLES = exports.START_CHARGE_CURRENT = exports.MAX_CHARGE_CURRENT = exports.MIN_CHARGE_CURRENT = void 0;
 exports.resolveWallboxCurrentLimits = resolveWallboxCurrentLimits;
 exports.evaluateBatteryAvailability = evaluateBatteryAvailability;
 exports.calculateAvailableSurplusPower = calculateAvailableSurplusPower;
@@ -36,8 +36,11 @@ exports.updateReleaseRejects = updateReleaseRejects;
 exports.holdRejectedRelease = holdRejectedRelease;
 exports.dropUnchangedChargerCommands = dropUnchangedChargerCommands;
 exports.buildChargerCommands = buildChargerCommands;
+exports.validateMaxAmpTotal = validateMaxAmpTotal;
 exports.limitTotalCurrent = limitTotalCurrent;
 exports.effectiveCurrentDemand = effectiveCurrentDemand;
+exports.parseWallboxIndex = parseWallboxIndex;
+exports.isConnectionError = isConnectionError;
 exports.MIN_CHARGE_CURRENT = 6;
 exports.MAX_CHARGE_CURRENT = 32;
 exports.START_CHARGE_CURRENT = 10;
@@ -501,6 +504,16 @@ function buildChargerCommands(allow, ampere, firmware) {
         { parameter: "alw", value: 1 },
     ];
 }
+exports.MAX_AMP_TOTAL = 64;
+function validateMaxAmpTotal(value) {
+    if (value === undefined || value === null) {
+        return { ampere: 0, valid: true };
+    }
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > exports.MAX_AMP_TOTAL) {
+        return { ampere: 0, valid: false };
+    }
+    return { ampere: value, valid: true };
+}
 function limitTotalCurrent(participants, maxAmpTotal) {
     if (!Number.isFinite(maxAmpTotal) || maxAmpTotal <= 0) {
         return participants.map(p => ({ allow: p.requestedAmp > 0, ampere: p.requestedAmp > 0 ? p.requestedAmp : 0 }));
@@ -554,5 +567,38 @@ function effectiveCurrentDemand(input) {
         return { demand: Math.min(wish, commanded), reclaimDelay: nextDelay };
     }
     return { demand: Math.min(wish, Math.max(floor, measured + exports.DEMAND_HEADROOM)), reclaimDelay: nextDelay };
+}
+function parseWallboxIndex(segment, wallboxCount) {
+    const match = /^Wallbox_(\d+)$/.exec(segment);
+    if (!match) {
+        return null;
+    }
+    const index = Number(match[1]);
+    return Number.isSafeInteger(index) && index < wallboxCount ? index : null;
+}
+const CONNECTION_ERROR_CODES = new Set([
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "ECONNABORTED",
+    "EHOSTUNREACH",
+    "EHOSTDOWN",
+    "ENETUNREACH",
+    "ENOTFOUND",
+    "EAI_AGAIN",
+    "ETIMEDOUT",
+    "ERR_NETWORK",
+]);
+function isConnectionError(error) {
+    if (typeof error !== "object" || error === null) {
+        return false;
+    }
+    const { isAxiosError, code, message } = error;
+    if (isAxiosError === true) {
+        return true;
+    }
+    if (typeof code === "string" && CONNECTION_ERROR_CODES.has(code)) {
+        return true;
+    }
+    return typeof message === "string" && [...CONNECTION_ERROR_CODES].some(errorCode => message.includes(errorCode));
 }
 //# sourceMappingURL=chargeManagerUtils.js.map

@@ -99,7 +99,11 @@ class go_e_charger extends utils.Adapter {
             maxChargeCurrent = chargeManagerUtils_1.MAX_CHARGE_CURRENT;
         }
         this.log.debug(`ChargeManager current range: ${chargeManagerMinCurrent}-${maxChargeCurrent} A`);
-        maxAmpTotal = this.validateBoundedIntConfig(this.config.maxAmpTotal, 0, 0, 250, "maxAmpTotal");
+        const maxAmpTotalConfig = (0, chargeManagerUtils_1.validateMaxAmpTotal)(this.config.maxAmpTotal);
+        if (!maxAmpTotalConfig.valid) {
+            this.log.warn(`Config maxAmpTotal is invalid (${JSON.stringify(this.config.maxAmpTotal)}); allowed is 0 (disabled) or up to ${chargeManagerUtils_1.MAX_AMP_TOTAL} A - total current budget disabled`);
+        }
+        maxAmpTotal = maxAmpTotalConfig.ampere;
         if (maxAmpTotal > 0) {
             this.log.debug(`Installation total current budget: ${maxAmpTotal} A`);
         }
@@ -285,7 +289,12 @@ class go_e_charger extends utils.Adapter {
                                 break;
                             default:
                                 if (statePath[2].startsWith("Wallbox_") && statePath[3] === "Settings") {
-                                    chargerNo = Number(statePath[2].replace("Wallbox_", ""));
+                                    const wallboxIndex = (0, chargeManagerUtils_1.parseWallboxIndex)(statePath[2], this.wallboxInfoList.length);
+                                    if (wallboxIndex === null) {
+                                        this.log.warn(`state change ignored for unconfigured wallbox: ${id}`);
+                                        return;
+                                    }
+                                    chargerNo = wallboxIndex;
                                     settingType = statePath[4];
                                     switch (settingType) {
                                         case "ChargeNOW":
@@ -740,6 +749,10 @@ class go_e_charger extends utils.Adapter {
             this.wallboxInfoList[iWB].ChargePower = Number.NaN;
             this.wallboxInfoList[iWB].RequestedAllow = null;
             this.wallboxInfoList[iWB].ReleaseRejects = 0;
+            if (!(0, chargeManagerUtils_1.isConnectionError)(error)) {
+                this.log.error(`Unexpected API V1 response from charger ${iWB} (${this.config.wallBoxList[iWB].ipAddress}): ${error} - check firmware/API version`);
+                return;
+            }
             if (error.message && error.message.includes("EHOSTUNREACH")) {
                 this.log.error(`Charger unreachable error when calling go-eCharger API: ${error}`);
                 this.wallboxInfoList[iWB].Firmware = `EHostUnreach`;
@@ -864,6 +877,10 @@ class go_e_charger extends utils.Adapter {
         })
             .catch(error => {
             this.wallboxInfoList[iWB].ForceState = Number.NaN;
+            if (!(0, chargeManagerUtils_1.isConnectionError)(error)) {
+                this.log.warn(`Unexpected API V2 response from charger ${iWB} (${this.config.wallBoxList[iWB].ipAddress}): ${error} - check firmware/API version`);
+                return;
+            }
             this.log.warn(`API V2 not reachable for charger ${iWB} (${this.config.wallBoxList[iWB].ipAddress}) - normal for hardware gen 1/2; on gen 3+ enable "HTTP API v2" for phase switching and RFID session info. (${error})`);
         });
     }
@@ -969,6 +986,10 @@ class go_e_charger extends utils.Adapter {
                 }
             }
             catch (error) {
+                if (!(0, chargeManagerUtils_1.isConnectionError)(error)) {
+                    this.log.warn(`Unexpected response from charger ${iWB} (${this.config.wallBoxList[iWB].ipAddress}) to ${command.parameter}=${command.value}: ${String(error)} - check firmware/API version`);
+                    return releaseSent;
+                }
                 this.log.warn(`Error: ${String(error)} by writing to charger ${iWB}: ${this.config.wallBoxList[iWB].ipAddress} ${command.parameter}=${command.value}`);
                 this.log.error(`Please verify IP address of charger ${iWB}: ${this.config.wallBoxList[iWB].ipAddress} !!!`);
                 return false;

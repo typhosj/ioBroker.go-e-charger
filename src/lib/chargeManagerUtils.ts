@@ -1385,6 +1385,30 @@ export interface TotalCurrentAllocation {
 	ampere: number;
 }
 
+/** Highest accepted installation current budget in amps (matches the admin UI maximum) */
+export const MAX_AMP_TOTAL = 64;
+
+/**
+ * Validates the configured installation current budget (`maxAmpTotal`).
+ *
+ * 0 keeps its meaning "no total limit" (budget disabled), so existing instances that still store
+ * the former default 0 continue to work unchanged. A missing value also disables the budget.
+ * Any other value must be an integer in [0, MAX_AMP_TOTAL]; invalid values disable the budget and
+ * are reported as invalid so the caller can log a warning.
+ *
+ * @param value Raw config value (may be undefined on upgraded instances)
+ * @returns The budget in amps (0 = disabled) and whether the raw value was valid
+ */
+export function validateMaxAmpTotal(value: unknown): { ampere: number; valid: boolean } {
+	if (value === undefined || value === null) {
+		return { ampere: 0, valid: true };
+	}
+	if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > MAX_AMP_TOTAL) {
+		return { ampere: 0, valid: false };
+	}
+	return { ampere: value, valid: true };
+}
+
 /**
  * Caps the summed charging current of all wallboxes to a single installation-wide budget in
  * amperes, protecting the supply fuse. This is a hard limit applied on top of the PV surplus
@@ -1520,4 +1544,61 @@ export function effectiveCurrentDemand(input: EffectiveDemandInput): EffectiveDe
 	}
 	// sustained under-draw: reserve only the measured draw plus headroom, freeing the rest for other wallboxes
 	return { demand: Math.min(wish, Math.max(floor, measured + DEMAND_HEADROOM)), reclaimDelay: nextDelay };
+}
+
+/**
+ * Parses the wallbox number from a state id segment like `Wallbox_2` and checks it against the
+ * configured wallboxes, so a state change for an unconfigured wallbox can be ignored instead of
+ * failing on a missing entry.
+ *
+ * @param segment State id segment, e.g. `Wallbox_2`
+ * @param wallboxCount Number of configured wallboxes
+ * @returns The wallbox index, or null if it is not a valid index of a configured wallbox
+ */
+export function parseWallboxIndex(segment: string, wallboxCount: number): number | null {
+	const match = /^Wallbox_(\d+)$/.exec(segment);
+	if (!match) {
+		return null;
+	}
+	const index = Number(match[1]);
+	return Number.isSafeInteger(index) && index < wallboxCount ? index : null;
+}
+
+/** Error codes of a request that never got a usable answer from the charger */
+const CONNECTION_ERROR_CODES = new Set([
+	"ECONNREFUSED",
+	"ECONNRESET",
+	"ECONNABORTED",
+	"EHOSTUNREACH",
+	"EHOSTDOWN",
+	"ENETUNREACH",
+	"ENOTFOUND",
+	"EAI_AGAIN",
+	"ETIMEDOUT",
+	"ERR_NETWORK",
+]);
+
+/**
+ * Whether an error of a charger request is a connection problem - timeout, refused or unreachable
+ * host, or an HTTP error status - rather than an answer the adapter could not understand.
+ *
+ * Only a connection problem may point at the configured IP address. A charger that answered with
+ * invalid JSON or without the expected fields (e.g. no `nrg` array) is reachable, and asking to
+ * verify its IP address only sends the user looking in the wrong place.
+ *
+ * @param error Error caught around a charger request and the parsing of its response
+ * @returns `true` for a connection or HTTP status error, `false` for an unexpected response
+ */
+export function isConnectionError(error: unknown): boolean {
+	if (typeof error !== "object" || error === null) {
+		return false;
+	}
+	const { isAxiosError, code, message } = error as { isAxiosError?: unknown; code?: unknown; message?: unknown };
+	if (isAxiosError === true) {
+		return true;
+	}
+	if (typeof code === "string" && CONNECTION_ERROR_CODES.has(code)) {
+		return true;
+	}
+	return typeof message === "string" && [...CONNECTION_ERROR_CODES].some(errorCode => message.includes(errorCode));
 }
