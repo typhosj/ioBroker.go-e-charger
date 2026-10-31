@@ -45,6 +45,9 @@ import {
 	withdrawReleaseWithModesOff,
 	phaseVoltagesFromNrg,
 	isConnectionError,
+	wallboxLabel,
+	connectionTransition,
+	LIVE_WALLBOX_STATES,
 	IDLE_RELEASE_DELAY_MS,
 	PHASE_MODE_AUTO,
 	phaseModeOf,
@@ -195,6 +198,7 @@ class go_e_charger extends utils.Adapter {
 				ID: index,
 				ipAddress: wallboxConfig.ipAddress,
 				readOnlyMode: wallboxConfig.readOnlyMode,
+				Online: null,
 				Firmware: "0",
 				Hardware: "V2",
 				HardwareMin3: false,
@@ -249,9 +253,9 @@ class go_e_charger extends utils.Adapter {
 		// handled consistently with the map() above and does not throw on .entries().
 		try {
 			for (const [iWB, wallBox] of wallBoxList.entries()) {
-				this.log.debug(`Setting up Wallbox ${iWB} with IP ${wallBox.ipAddress} in config`);
+				this.log.debug(`Setting up Wallbox ${wallboxLabel(iWB, wallBox.chargerName)} with IP ${wallBox.ipAddress} in config`);
 				if (!wallBox.ipAddress) {
-					throw new Error(`Wallbox ${iWB} - IP address not set - stopping adapter`);
+					throw new Error(`Wallbox ${wallboxLabel(iWB, wallBox.chargerName)} - IP address not set - stopping adapter`);
 				}
 
 				// resolve the per-wallbox current limits from the installation limit and the optional
@@ -267,10 +271,10 @@ class go_e_charger extends utils.Adapter {
 				this.wallboxInfoList[iWB].MaxAmp = limits.maxCurrent;
 				if (wallBox.minAmp && wallBox.maxAmp && wallBox.minAmp > wallBox.maxAmp) {
 					this.log.warn(
-						`Wallbox ${iWB}: configured minAmp (${wallBox.minAmp} A) exceeds maxAmp (${wallBox.maxAmp} A); using ${limits.minCurrent}/${limits.maxCurrent} A`,
+						`Wallbox ${wallboxLabel(iWB, wallBox.chargerName)}: configured minAmp (${wallBox.minAmp} A) exceeds maxAmp (${wallBox.maxAmp} A); using ${limits.minCurrent}/${limits.maxCurrent} A`,
 					);
 				}
-				this.log.debug(`Wallbox ${iWB} current limits: ${limits.minCurrent}-${limits.maxCurrent} A`);
+				this.log.debug(`Wallbox ${wallboxLabel(iWB, wallBox.chargerName)} current limits: ${limits.minCurrent}-${limits.maxCurrent} A`);
 
 				// init device
 				await this.projectUtils.checkAndSetDevice(
@@ -284,6 +288,16 @@ class go_e_charger extends utils.Adapter {
 				// init channel for settings and info states for each charger
 				await this.projectUtils.checkAndSetChannel(`Wallbox_${iWB}.info`, `Informations about go-eCharger`, `go-eCharger.png`, true);
 				await this.projectUtils.checkAndSetValueBoolean(`Wallbox_${iWB}.info.connection`, false, `Device connected`, "indicator.connected");
+				// read-only: shows which IP address the adapter uses for this charger (from the instance config)
+				await this.projectUtils.checkAndSetValue(
+					`Wallbox_${iWB}.info.ipAddress`,
+					wallBox.ipAddress,
+					`Configured IP address of charger`,
+					"info.ip",
+					false,
+					false,
+					true,
+				);
 				await this.projectUtils.checkAndSetChannel(`Wallbox_${iWB}.Power`, `current wallbox power data`, `go-eCharger.png`, true);
 				await this.projectUtils.checkAndSetChannel(`Wallbox_${iWB}.Settings`, `states to dynamically adjust wallbox settings`, `go-eCharger.png`, true);
 				await this.projectUtils.checkAndSetChannel(`Wallbox_${iWB}.statistics`, `wallbox statistics data`, `go-eCharger.png`, true);
@@ -316,9 +330,12 @@ class go_e_charger extends utils.Adapter {
 
 				if (wallBox.ipAddress) {
 					await this.Read_ChargerAPIV1(iWB);
-					await this.Read_ChargerAPIV2(iWB);
-					this.log.info(`IP address charger ${iWB} found in config: ${wallBox.ipAddress}`);
-					void this.setState(`Wallbox_${iWB}.info.connection`, { val: true, ack: true });
+					// an unreachable charger cannot answer on API V2 either - skip the misleading "gen 1/2" warning
+					if (this.wallboxInfoList[iWB].Online !== false) {
+						await this.Read_ChargerAPIV2(iWB);
+					}
+					this.log.info(`IP address of charger ${this.wallboxLabel(iWB)} found in config: ${wallBox.ipAddress}`);
+					// Wallbox_<n>.info.connection is set by the read above (and confirmed in firstStart)
 					// the charger read may have tightened the current limits (hardware/cable) - refresh the ChargeCurrent range
 					await this.projectUtils.checkAndSetValueNumber(
 						`Wallbox_${iWB}.Settings.ChargeCurrent`,
@@ -596,11 +613,11 @@ class go_e_charger extends utils.Adapter {
 	private async firstStart(): Promise<boolean> {
 		let reachableChargers = 0;
 		for (let iWB = 0; iWB < this.config.wallBoxList.length; iWB++) {
-			this.log.debug(`Initial ReadCharger done, detected charger ${iWB} firmware ${this.wallboxInfoList[iWB].Firmware}`);
+			this.log.debug(`Initial ReadCharger done, detected charger ${this.wallboxLabel(iWB)} firmware ${this.wallboxInfoList[iWB].Firmware}`);
 			switch (this.wallboxInfoList[iWB].Firmware) {
 				case "0":
 				case "EHostUnreach":
-					this.log.warn(`No charger detected on IP address ${this.config.wallBoxList[iWB].ipAddress} for charger ${iWB}`);
+					this.log.warn(`No charger detected for charger ${this.wallboxLabel(iWB, true)}`);
 					await this.setState(`Wallbox_${iWB}.info.connection`, { val: false, ack: true });
 					break;
 				case "033":
@@ -630,7 +647,7 @@ class go_e_charger extends utils.Adapter {
 					reachableChargers++;
 					break;
 				default:
-					this.log.warn(`Not explicitly supported firmware ${this.wallboxInfoList[iWB].Firmware} for charger ${iWB} found!!!`);
+					this.log.warn(`Not explicitly supported firmware ${this.wallboxInfoList[iWB].Firmware} for charger ${this.wallboxLabel(iWB)} found!!!`);
 					await this.setState(`Wallbox_${iWB}.info.connection`, { val: true, ack: true });
 					reachableChargers++;
 					// sentry.io send firmware version
@@ -683,8 +700,14 @@ class go_e_charger extends utils.Adapter {
 				if (!this.wallboxInfoList[iWB].ChargeManager || this.wallboxInfoList[iWB].ChargeNOW) {
 					this.wallboxInfoList[iWB].BatteryReady = false;
 				}
+				const wasOnline = this.wallboxInfoList[iWB].Online;
 				await this.Read_ChargerAPIV1(iWB);
-				if (this.wallboxInfoList[iWB].HardwareMin3) {
+				if (this.wallboxInfoList[iWB].Online === false) {
+					// unreachable: no API V2 read, no ChargeNOW end check on missing data - handled in the second pass
+					continue;
+				}
+				// a charger that was unreachable (e.g. at adapter start) is probed on API V2 once it is back
+				if (this.wallboxInfoList[iWB].HardwareMin3 || wasOnline === false) {
 					await this.Read_ChargerAPIV2(iWB);
 				}
 				if (this.wallboxInfoList[iWB].ChargeNOW) {
@@ -729,7 +752,15 @@ class go_e_charger extends utils.Adapter {
 					this.resetIdleRelease(iWB);
 					this.wallboxInfoList[iWB].ChargeManagerRunning = false;
 				}
-				if (info.ChargeNOW) {
+				if (info.Online === false) {
+					// unreachable charger: nothing can be sent, it takes no part in the surplus or the current
+					// budget, and the ChargeManager seeds its state from the charger again once it is back
+					info.ChargeManagerRunning = false;
+					info.SetAmp = 0;
+					info.DelayOff = 0;
+					this.resetIdleRelease(iWB);
+					await this.setChargeState(iWB, `Charger unreachable`);
+				} else if (info.ChargeNOW) {
 					// while ChargeNOW is armed but nothing is plugged in yet, not a single command is
 					// sent, so the charger is not woken - charging starts the cycle the vehicle arrives
 					if (isVehicleDisconnected(info.CarState)) {
@@ -1026,7 +1057,7 @@ class go_e_charger extends utils.Adapter {
 		this.wallboxInfoList[iWB][mode] = false;
 		this.resetChargeNowSession(iWB);
 		void this.setState(`Wallbox_${iWB}.Settings.${mode}`, false, true);
-		this.log.info(`Charger ${iWB}: ${mode} switched off because ${enabledMode} was enabled`);
+		this.log.info(`Charger ${this.wallboxLabel(iWB)}: ${mode} switched off because ${enabledMode} was enabled`);
 	}
 
 	/**
@@ -1054,7 +1085,7 @@ class go_e_charger extends utils.Adapter {
 		info.ChargeNOW = false;
 		await this.setState(`Wallbox_${iWB}.Settings.ChargeNOW`, false, true);
 		this.log.info(
-			`Charger ${iWB}: ChargeNOW switched off - ${decision.end === "unplugged" ? `vehicle unplugged` : `vehicle stopped drawing power, battery full or charge ended`}`,
+			`Charger ${this.wallboxLabel(iWB)}: ChargeNOW switched off - ${decision.end === "unplugged" ? `vehicle unplugged` : `vehicle stopped drawing power, battery full or charge ended`}`,
 		);
 	}
 
@@ -1087,7 +1118,19 @@ class go_e_charger extends utils.Adapter {
 		await this.projectUtils.checkAndSetValue(`Wallbox_${iWB}.info.chargeState`, reason, `Why the charger is charging or not`, "text");
 		// only remembered once written, so a failed write is retried next cycle
 		this.wallboxInfoList[iWB].ChargeState = reason;
-		this.log.info(`Charger ${iWB}: ${reason}`);
+		this.log.info(`Charger ${this.wallboxLabel(iWB)}: ${reason}`);
+	}
+
+	/**
+	 * Identifies a wallbox in log messages by its configured name, see {@link wallboxLabel}.
+	 *
+	 * @param iWB - Index of the wallbox in the configuration list (`wallBoxList`)
+	 * @param withIp - Append the configured IP address in parentheses
+	 * @returns e.g. `"WEST - Tesla"` / `"WEST - Tesla" (192.168.11.181)`, or the index without a name
+	 */
+	private wallboxLabel(iWB: number, withIp = false): string {
+		const wallBox = this.config.wallBoxList[iWB];
+		return wallboxLabel(iWB, wallBox?.chargerName, withIp ? wallBox?.ipAddress : undefined);
 	}
 
 	/**
@@ -1104,10 +1147,11 @@ class go_e_charger extends utils.Adapter {
 			.then(async response => {
 				//.status == 200
 				const result = JSON.parse(response.data);
-				this.log.debug(`Read charger ${iWB} API V1: ${response.data}`);
+				this.log.debug(`Read charger ${this.wallboxLabel(iWB)} API V1: ${response.data}`);
 				await this.ParseStatusAPIV1(result, iWB);
+				await this.setWallboxReachable(iWB);
 			})
-			.catch(error => {
+			.catch(async error => {
 				// without a fresh read every command is sent again, and no check runs on an old power reading
 				this.wallboxInfoList[iWB].Reported = {};
 				this.wallboxInfoList[iWB].ChargePower = Number.NaN;
@@ -1115,19 +1159,68 @@ class go_e_charger extends utils.Adapter {
 				this.wallboxInfoList[iWB].ReleaseRejects = 0;
 				if (!isConnectionError(error)) {
 					// the charger answered - its IP address is fine, the response is not what the adapter expects
-					this.log.error(
-						`Unexpected API V1 response from charger ${iWB} (${this.config.wallBoxList[iWB].ipAddress}): ${error} - check firmware/API version`,
-					);
+					this.log.error(`Unexpected API V1 response from charger ${this.wallboxLabel(iWB, true)}: ${error} - check firmware/API version`);
 					return;
 				}
 				if (error.message && error.message.includes("EHOSTUNREACH")) {
-					this.log.error(`Charger unreachable error when calling go-eCharger API: ${error}`);
 					this.wallboxInfoList[iWB].Firmware = `EHostUnreach`;
-				} else {
-					this.log.error(`Error in calling go-e charger ${iWB} API: ${error}`);
 				}
-				this.log.error(`Please verify IP address of charger ${iWB}: ${this.config.wallBoxList[iWB].ipAddress} !!!`);
+				await this.setWallboxUnreachable(iWB, error);
 			});
+	}
+
+	/**
+	 * Marks a wallbox as reachable after a successful API V1 read. `info.connection` is only written
+	 * when the reachability changes, and a recovery from an outage is logged once.
+	 *
+	 * @param iWB - Index of the wallbox in the configuration list (`wallBoxList`)
+	 */
+	private async setWallboxReachable(iWB: number): Promise<void> {
+		const info = this.wallboxInfoList[iWB];
+		if (connectionTransition(info.Online, true) === null) {
+			return;
+		}
+		const wasOffline = info.Online === false;
+		info.Online = true;
+		await this.setState(`Wallbox_${iWB}.info.connection`, { val: true, ack: true });
+		if (wasOffline) {
+			this.log.info(`Charger ${this.wallboxLabel(iWB, true)} is reachable again`);
+		}
+	}
+
+	/**
+	 * Marks a wallbox as unreachable after an API V1 connection error.
+	 *
+	 * On the change to unreachable the error is logged once, `info.connection` is set to false (so
+	 * the device shows offline in the object tree) and all live readings ({@link LIVE_WALLBOX_STATES})
+	 * are reset to `null` instead of showing stale values. While the outage lasts, further errors are
+	 * only logged at debug level, so a charger without power does not flood the log every cycle.
+	 *
+	 * @param iWB - Index of the wallbox in the configuration list (`wallBoxList`)
+	 * @param error - The connection error of the failed request
+	 */
+	private async setWallboxUnreachable(iWB: number, error: unknown): Promise<void> {
+		const info = this.wallboxInfoList[iWB];
+		if (connectionTransition(info.Online, false) === null) {
+			this.log.debug(`Charger ${this.wallboxLabel(iWB, true)} still unreachable: ${String(error)}`);
+			return;
+		}
+		info.Online = false;
+		this.log.error(`Charger ${this.wallboxLabel(iWB)} unreachable when calling go-eCharger API: ${String(error)}`);
+		this.log.error(
+			`Please verify IP address of charger ${this.wallboxLabel(iWB, true)} !!! Further errors are logged at debug level until it is reachable again.`,
+		);
+		// internal live data: no vehicle known, nothing drawn - so neither the surplus nor the current budget counts it
+		info.CarState = 0;
+		info.MeasuredMaxChargeAmp = 0;
+		info.ForceState = Number.NaN;
+		await this.setState(`Wallbox_${iWB}.info.connection`, { val: false, ack: true });
+		for (const state of LIVE_WALLBOX_STATES) {
+			const id = `Wallbox_${iWB}.${state}`;
+			if (await this.getObjectAsync(id)) {
+				await this.setState(id, { val: null, ack: true });
+			}
+		}
 	}
 
 	/**
@@ -1260,7 +1353,7 @@ class go_e_charger extends utils.Adapter {
 		this.wallboxInfoList[iWB].ReleaseRejects = updateReleaseRejects(Number(status.alw), this.wallboxInfoList[iWB].RequestedAllow, rejectsBefore);
 		if (rejectsBefore < RELEASE_RETRY_LIMIT && this.wallboxInfoList[iWB].ReleaseRejects >= RELEASE_RETRY_LIMIT) {
 			this.log.info(
-				`Charger ${iWB}: the charge release was ignored ${this.wallboxInfoList[iWB].ReleaseRejects} times in a row - still retrying, but only every ${RELEASE_RETRY_INTERVAL} cycles from now on`,
+				`Charger ${this.wallboxLabel(iWB)}: the charge release was ignored ${this.wallboxInfoList[iWB].ReleaseRejects} times in a row - still retrying, but only every ${RELEASE_RETRY_INTERVAL} cycles from now on`,
 			);
 		}
 		switch (status.alw) {
@@ -1331,7 +1424,7 @@ class go_e_charger extends utils.Adapter {
 				await this.setUnlockedByRFID(Number(status.uby), basePath);
 			}
 		}
-		this.log.debug(`got and parsed go-e charger ${iWB} data`);
+		this.log.debug(`got and parsed go-e charger ${this.wallboxLabel(iWB)} data`);
 	}
 
 	/**
@@ -1477,12 +1570,12 @@ class go_e_charger extends utils.Adapter {
 			.then(async response => {
 				//.status == 200
 				const result = JSON.parse(response.data);
-				this.log.debug(`Read charger ${iWB} API V2: ${response.data}`);
+				this.log.debug(`Read charger ${this.wallboxLabel(iWB)} API V2: ${response.data}`);
 				this.wallboxInfoList[iWB].HardwareMin3 = true;
 				try {
 					await this.ParseStatusAPIV2(result, iWB);
 				} catch (error) {
-					this.log.error(`Error parsing go-e charger ${iWB} API V2 response: ${error as Error}`);
+					this.log.error(`Error parsing go-e charger ${this.wallboxLabel(iWB)} API V2 response: ${error as Error}`);
 				}
 			})
 			.catch(error => {
@@ -1490,14 +1583,12 @@ class go_e_charger extends utils.Adapter {
 				this.wallboxInfoList[iWB].ForceState = Number.NaN;
 				if (!isConnectionError(error)) {
 					// the charger answered on API V2, but not with valid JSON
-					this.log.warn(
-						`Unexpected API V2 response from charger ${iWB} (${this.config.wallBoxList[iWB].ipAddress}): ${error} - check firmware/API version`,
-					);
+					this.log.warn(`Unexpected API V2 response from charger ${this.wallboxLabel(iWB, true)}: ${error} - check firmware/API version`);
 					return;
 				}
 				// API V2 is optional - failing is normal on hardware gen 1/2 which only offers API V1
 				this.log.warn(
-					`API V2 not reachable for charger ${iWB} (${this.config.wallBoxList[iWB].ipAddress}) - normal for hardware gen 1/2; on gen 3+ enable "HTTP API v2" for phase switching and RFID session info. (${error})`,
+					`API V2 not reachable for charger ${this.wallboxLabel(iWB, true)} - normal for hardware gen 1/2; on gen 3+ enable "HTTP API v2" for phase switching and RFID session info. (${error})`,
 				);
 			});
 	}
@@ -1611,7 +1702,7 @@ class go_e_charger extends utils.Adapter {
 			"phase",
 			"value",
 		);
-		this.log.debug(`got enabled phases for charger ${iWB}: ${this.wallboxInfoList[iWB].EnabledPhases}`);
+		this.log.debug(`got enabled phases for charger ${this.wallboxLabel(iWB)}: ${this.wallboxInfoList[iWB].EnabledPhases}`);
 		this.wallboxInfoList[iWB].ForceState = typeof status.frc === "number" ? status.frc : Number.NaN;
 		this.wallboxInfoList[iWB].Reported.alw = releaseReadback(this.wallboxInfoList[iWB].Reported.alw, this.wallboxInfoList[iWB].ForceState);
 		this.wallboxInfoList[iWB].PhaseToggleWaitMs = chargerPauseMs(status.mptwt, DEFAULT_PHASE_TOGGLE_WAIT_MS);
@@ -1633,7 +1724,7 @@ class go_e_charger extends utils.Adapter {
 		if (status.trx !== undefined) {
 			await this.setUnlockedByRFID(status.trx === null ? 0 : Number(status.trx), basePath);
 		}
-		this.log.debug(`got and parsed go-e charger ${iWB} data with API V2`);
+		this.log.debug(`got and parsed go-e charger ${this.wallboxLabel(iWB)} data with API V2`);
 	}
 
 	/**
@@ -1650,7 +1741,7 @@ class go_e_charger extends utils.Adapter {
 		}
 		// in read-only mode no control commands are sent to the charger (here: phase switching)
 		if (this.config.wallBoxList[iWB].readOnlyMode) {
-			this.log.debug(`Charger ${iWB} is in read-only mode - skipping phase switching`);
+			this.log.debug(`Charger ${this.wallboxLabel(iWB)} is in read-only mode - skipping phase switching`);
 			return;
 		}
 		// psm is a stored charger setting - only write it when the charger reports a different mode
@@ -1660,7 +1751,7 @@ class go_e_charger extends utils.Adapter {
 		}
 		// the phase count only matters once the charger charges, see mayWritePhaseSwitch
 		if (!mayWritePhaseSwitch(this.wallboxInfoList[iWB].ForceState, "enable")) {
-			this.log.debug(`Charger ${iWB}: phase switch to PSM=${psm} waits for the charge release`);
+			this.log.debug(`Charger ${this.wallboxLabel(iWB)}: phase switch to PSM=${psm} waits for the charge release`);
 			return;
 		}
 		await axiosInstance
@@ -1668,12 +1759,12 @@ class go_e_charger extends utils.Adapter {
 			.then(response => {
 				//.status == 200
 				this.wallboxInfoList[iWB].LastPhaseSwitchMs = Date.now();
-				this.log.info(`Charger ${iWB}: switched to ${Charge3Phase ? 3 : 1}-phase charging`);
-				this.log.debug(`Sent: PSM=${psm} to charger ${iWB} → Response: ${response.statusText}`);
+				this.log.info(`Charger ${this.wallboxLabel(iWB)}: switched to ${Charge3Phase ? 3 : 1}-phase charging`);
+				this.log.debug(`Sent: PSM=${psm} to charger ${this.wallboxLabel(iWB)} → Response: ${response.statusText}`);
 			})
 			.catch(error => {
-				this.log.warn(`Error: ${error} while setting 3 phases to charger ${iWB} = ${Charge3Phase} @ ${this.config.wallBoxList[iWB].ipAddress}`);
-				this.log.error(`Please verify IP address of charger ${iWB}: ${this.config.wallBoxList[iWB].ipAddress} !!!`);
+				this.log.warn(`Error: ${error} while setting 3 phases to charger ${this.wallboxLabel(iWB, true)} = ${Charge3Phase}`);
+				this.log.error(`Please verify IP address of charger ${this.wallboxLabel(iWB, true)} !!!`);
 			});
 	}
 
@@ -1690,17 +1781,17 @@ class go_e_charger extends utils.Adapter {
 		const basePath = `Wallbox_${iWB}`;
 		// in read-only mode no control commands are sent to the charger (neither charge release nor charging current)
 		if (this.config.wallBoxList[iWB].readOnlyMode) {
-			this.log.debug(`Charger ${iWB} is in read-only mode - skipping charge config write (${LogMessage}  -  ${Ampere} Ampere)`);
+			this.log.debug(`Charger ${this.wallboxLabel(iWB)} is in read-only mode - skipping charge config write (${LogMessage}  -  ${Ampere} Ampere)`);
 			return false;
 		}
 
 		if (Allow !== "0" && Allow !== "1") {
-			this.log.warn(`Invalid charge release value for charger ${iWB}: ${Allow}`);
+			this.log.warn(`Invalid charge release value for charger ${this.wallboxLabel(iWB)}: ${Allow}`);
 			return false;
 		}
 		const commands = buildChargerCommands(Allow === "1", Ampere, this.wallboxInfoList[iWB].Firmware);
 		if (!commands) {
-			this.log.warn(`Invalid charging current for charger ${iWB}: ${Ampere} A`);
+			this.log.warn(`Invalid charging current for charger ${this.wallboxLabel(iWB)}: ${Ampere} A`);
 			return false;
 		}
 		// set on the request, not on the write: a release the charger already reports is not re-sent,
@@ -1726,7 +1817,7 @@ class go_e_charger extends utils.Adapter {
 					`http://${this.config.wallBoxList[iWB].ipAddress}/mqtt?payload=${command.parameter}=${command.value}`,
 					{ transformResponse: r => r },
 				);
-				this.log.debug(`Sent to charger ${iWB}: ${command.parameter}=${command.value}`);
+				this.log.debug(`Sent to charger ${this.wallboxLabel(iWB)}: ${command.parameter}=${command.value}`);
 
 				if (command.parameter === "alw") {
 					this.wallboxInfoList[iWB].RequestedAllow = command.value;
@@ -1748,14 +1839,12 @@ class go_e_charger extends utils.Adapter {
 				if (!isConnectionError(error)) {
 					// the write reached the charger - only its answer could not be read
 					this.log.warn(
-						`Unexpected response from charger ${iWB} (${this.config.wallBoxList[iWB].ipAddress}) to ${command.parameter}=${command.value}: ${String(error)} - check firmware/API version`,
+						`Unexpected response from charger ${this.wallboxLabel(iWB, true)} to ${command.parameter}=${command.value}: ${String(error)} - check firmware/API version`,
 					);
 					return releaseSent;
 				}
-				this.log.warn(
-					`Error: ${String(error)} by writing to charger ${iWB}: ${this.config.wallBoxList[iWB].ipAddress} ${command.parameter}=${command.value}`,
-				);
-				this.log.error(`Please verify IP address of charger ${iWB}: ${this.config.wallBoxList[iWB].ipAddress} !!!`);
+				this.log.warn(`Error: ${String(error)} by writing to charger ${this.wallboxLabel(iWB, true)}: ${command.parameter}=${command.value}`);
+				this.log.error(`Please verify IP address of charger ${this.wallboxLabel(iWB, true)} !!!`);
 				return false;
 			}
 		}
@@ -1776,7 +1865,11 @@ class go_e_charger extends utils.Adapter {
 	 */
 	private async planChargeManagerCycle(): Promise<(WallboxChargePlan | undefined)[]> {
 		const plans: (WallboxChargePlan | undefined)[] = new Array(this.config.wallBoxList.length).fill(undefined);
-		const candidates = [...this.config.wallBoxList.keys()].filter(iWB => this.wallboxInfoList[iWB].ChargeManager && !this.wallboxInfoList[iWB].ChargeNOW);
+		// an unreachable charger is left out, so its last power reading is neither added back to the
+		// surplus nor does it reserve surplus for a vehicle it can no longer charge
+		const candidates = [...this.config.wallBoxList.keys()].filter(
+			iWB => this.wallboxInfoList[iWB].ChargeManager && !this.wallboxInfoList[iWB].ChargeNOW && this.wallboxInfoList[iWB].Online !== false,
+		);
 		if (!candidates.length) {
 			// a limit learned for an earlier charge would only throttle the next start
 			if (supplyLimitState.limit !== null) {
@@ -1930,7 +2023,7 @@ class go_e_charger extends utils.Adapter {
 			const limitNote =
 				supplyLimitState.limit === null ? "" : `, limit ${Math.round(supplyLimitState.limit)} W${decision.supplyLimited ? ", active" : ""}`;
 			this.log.debug(
-				`ChargeManager charger ${iWB}: surplus ${Math.round(decision.availablePower)} W → optimal ${decision.optimalCurrent ?? 0} A, ramp ${decision.nextState.currentAmp} A, action=${decision.action} (${decision.reason}), car=${carState}${limitNote}`,
+				`ChargeManager charger ${this.wallboxLabel(iWB)}: surplus ${Math.round(decision.availablePower)} W → optimal ${decision.optimalCurrent ?? 0} A, ramp ${decision.nextState.currentAmp} A, action=${decision.action} (${decision.reason}), car=${carState}${limitNote}`,
 			);
 
 			const phaseDecision = phaseDecisions[index];
@@ -1944,7 +2037,7 @@ class go_e_charger extends utils.Adapter {
 			info.PhaseSwitchDelay = phaseDecision.switchDelay;
 			// phase-switch control loop: show the current/target phase and the pending dwell counter
 			this.log.debug(
-				`ChargeManager charger ${iWB} phase: ${info.EnabledPhases}p now, target ${phaseDecision.targetPhases}p, dwell ${phaseDecision.switchDelay}`,
+				`ChargeManager charger ${this.wallboxLabel(iWB)} phase: ${info.EnabledPhases}p now, target ${phaseDecision.targetPhases}p, dwell ${phaseDecision.switchDelay}`,
 			);
 			// the automatic decision is tracked internally and drives the charger via Switch_3Phases;
 			// it must never overwrite the user's manual Settings.Charge3Phase request
@@ -1958,8 +2051,8 @@ class go_e_charger extends utils.Adapter {
 				// so only the switch actually written is logged as info (Switch_3Phases)
 				this.log.debug(
 					info.ForceState === FORCE_STATE_ON
-						? `ChargeManager: switching charger ${iWB} to ${phaseDecision.targetPhases}-phase charging (surplus ${surplus} W)`
-						: `ChargeManager: charger ${iWB} will start with ${phaseDecision.targetPhases}-phase charging (surplus ${surplus} W) - the switch waits for the charge release`,
+						? `ChargeManager: switching charger ${this.wallboxLabel(iWB)} to ${phaseDecision.targetPhases}-phase charging (surplus ${surplus} W)`
+						: `ChargeManager: charger ${this.wallboxLabel(iWB)} will start with ${phaseDecision.targetPhases}-phase charging (surplus ${surplus} W) - the switch waits for the charge release`,
 				);
 			}
 		});
@@ -2025,11 +2118,11 @@ class go_e_charger extends utils.Adapter {
 			used += alloc.ampere;
 			const req = participants[iWB].requestedAmp;
 			if (req <= 0) {
-				return `box${iWB} idle`;
+				return `${this.wallboxLabel(iWB)} idle`;
 			}
 			const tag = participants[iWB].chargeNow ? "NOW" : "CM";
 			const state = !alloc.allow ? "off" : alloc.ampere < req ? `${alloc.ampere} A throttled` : `${alloc.ampere} A`;
-			return `box${iWB} ${tag} req ${req}->${state}`;
+			return `${this.wallboxLabel(iWB)} ${tag} req ${req}->${state}`;
 		});
 		this.log.debug(`Total current budget ${maxAmpTotal} A: ${summary.join(" | ")} (used ${used}/${maxAmpTotal} A)`);
 
@@ -2049,7 +2142,7 @@ class go_e_charger extends utils.Adapter {
 	 */
 	async Charge_Manager(iWB: number, decision: ChargeManagerDecision): Promise<boolean> {
 		if (decision.optimalCurrent === null) {
-			this.log.warn(`ChargeManager inputs are invalid for charger ${iWB}; charging will be disabled`);
+			this.log.warn(`ChargeManager inputs are invalid for charger ${this.wallboxLabel(iWB)}; charging will be disabled`);
 			await this.stopChargeManager(`Invalid ChargeManager input`, iWB);
 			return false;
 		}

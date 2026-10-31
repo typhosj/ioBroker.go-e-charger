@@ -247,6 +247,9 @@ If you enjoyed this project – or are just feeling generous – consider buying
 -->
 ### **WORK IN PROGRESS**
 
+- (HombachC) an unreachable charger (e.g. without power) is now shown offline: its info.connection turns false, live readings are cleared and it is left out of ChargeManager and current budget until it answers again; the error is logged once instead of every cycle
+- (HombachC) added read-only state info.ipAddress with the configured IP address of each charger
+- (HombachC) log messages now name a charger by its configured name (e.g. charger "WEST - Tesla" (192.168.11.181)) instead of its number; the number is only used when no name is configured
 - (typhosj) ChargeManager: new state `Settings.PhaseMode` switches between fixed one-phase, fixed three-phase and automatic phase switching at runtime; the instance option now only makes the automatic mode available
 - (typhosj) ChargeManager: the automatic 1-/3-phase switching now keeps a real gap between switching up and switching back down - for a 16 A wallbox both thresholds used to be the same value
 - (typhosj) ChargeNOW and ChargeManager now switch each other off instead of both staying on with ChargeNOW silently taking precedence
