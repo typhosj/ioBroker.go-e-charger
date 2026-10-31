@@ -24,6 +24,7 @@ exports.describeHold = describeHold;
 exports.planChargeManagerFleet = planChargeManagerFleet;
 exports.phaseModeToSend = phaseModeToSend;
 exports.resolvePhaseModeWrite = resolvePhaseModeWrite;
+exports.autoPhaseSupported = autoPhaseSupported;
 exports.phaseModeOf = phaseModeOf;
 exports.decideIdleRelease = decideIdleRelease;
 exports.decideChargeNowEnd = decideChargeNowEnd;
@@ -383,14 +384,17 @@ function phaseModeToSend(charge3Phase, enabledPhases) {
     return charge3Phase ? 2 : 1;
 }
 exports.PHASE_MODE_AUTO = 0;
-function resolvePhaseModeWrite(value, autoAllowed) {
+function resolvePhaseModeWrite(value, autoAllowed, enabledPhases) {
     if (value === 1 || value === 3) {
         return { auto: false, charge3Phase: value === 3 };
     }
     if (value === exports.PHASE_MODE_AUTO && autoAllowed) {
-        return { auto: true };
+        return { auto: true, managedCharge3Phase: enabledPhases === 3 };
     }
     return null;
+}
+function autoPhaseSupported(hardwareMin3, online) {
+    return hardwareMin3 || online !== true;
 }
 function phaseModeOf(auto, charge3Phase) {
     return auto ? exports.PHASE_MODE_AUTO : charge3Phase ? 3 : 1;
