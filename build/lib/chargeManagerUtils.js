@@ -14,6 +14,7 @@ exports.updateSupplyLimit = updateSupplyLimit;
 exports.decideChargeManagerFleet = decideChargeManagerFleet;
 exports.decidePhaseSwitch = decidePhaseSwitch;
 exports.chargerPauseMs = chargerPauseMs;
+exports.phaseSwitchStartsWait = phaseSwitchStartsWait;
 exports.seedChargeManagerState = seedChargeManagerState;
 exports.releaseReadback = releaseReadback;
 exports.enforceOffState = enforceOffState;
@@ -314,6 +315,9 @@ function validDelayCycles(cycles) {
 exports.DEFAULT_PHASE_TOGGLE_WAIT_MS = 10 * 60 * 1000;
 function chargerPauseMs(value, fallback) {
     return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : fallback;
+}
+function phaseSwitchStartsWait(carState) {
+    return !(carState === 1 || carState === 3 || carState === 4);
 }
 function seedChargeManagerState(reportedAllow, reportedAmp, minimum, maximum) {
     if (reportedAllow !== 1 || !Number.isFinite(reportedAmp) || reportedAmp <= 0) {
