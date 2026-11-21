@@ -26,6 +26,10 @@
 
 [![NPM](https://nodei.co/npm/iobroker.go-e-charger.png?downloads=true)](https://nodei.co/npm/iobroker.go-e-charger/)
 
+## Sentry
+
+This adapter employs Sentry libraries to automatically report exceptions and code errors to the developers. For more details and information on how to disable error reporting, please consult the [Sentry-Plugin Documentation](https://github.com/ioBroker/plugin-sentry#plugin-sentry)!
+
 ## ioBroker adapter for go-e Charger EV wallboxes
 
 This adapter integrates one or more go-e Charger wallboxes into your ioBroker home automation. It cyclically polls each wallbox via its local HTTP API, provides all relevant data as ioBroker states, and lets you control charging directly from your smart home.
@@ -230,9 +234,12 @@ While the budget is active, the adapter also **follows the actually measured cha
 
 > This is a conservative per-phase-agnostic model: every ampere counts against one budget regardless of which phase it lands on. It never exceeds the fuse rating, but with loads spread across phases it may leave some capacity unused.
 
-## Sentry
+## Migrating from the go-e adapter
 
-This adapter employs Sentry libraries to automatically report exceptions and code errors to the developers. For more details and information on how to disable error reporting, please consult the [Sentry-Plugin Documentation](https://github.com/ioBroker/plugin-sentry#plugin-sentry)!
+Coming from the adapter [ioBroker.go-e](https://github.com/MK-2001/ioBroker.go-e)? The migration guide maps datapoints and settings, answers common questions (go-e app mode, HTTP API v1/v2, sign of the input values, running both adapters in parallel with read-only mode) and lists what is not supported yet:
+
+- [Migration guide (English)](https://github.com/hombach/ioBroker.go-e-charger/blob/master/docu/migration-from-go-e.md)
+- [Umstiegsanleitung (Deutsch)](https://github.com/hombach/ioBroker.go-e-charger/blob/master/docu/migration-from-go-e_de.md)
 
 ## Donate
 
@@ -247,10 +254,9 @@ If you enjoyed this project – or are just feeling generous – consider buying
 -->
 ### **WORK IN PROGRESS**
 
-- (HombachC) an unreachable charger (e.g. without power) is now shown offline: its info.connection turns false, live readings are cleared and it is left out of ChargeManager and current budget until it answers again; the error is logged once instead of every cycle
-- (HombachC) added read-only state info.ipAddress with the configured IP address of each charger
-- (HombachC) log messages now name a charger by its configured name (e.g. charger "WEST - Tesla" (192.168.11.181)) instead of its number; the number is only used when no name is configured
-- (typhosj) ChargeManager: new state `Settings.PhaseMode` switches between fixed one-phase, fixed three-phase and automatic phase switching at runtime; the instance option now only makes the automatic mode available
+- (HombachC) moved the Sentry notice near the top of README.md to satisfy the repository checker (#938)
+- (hombach) updated iobroker/testing
+- (hombach) updated dependencies
 - (typhosj) ChargeManager: the automatic 1-/3-phase switching now keeps a real gap between switching up and switching back down - for a 16 A wallbox both thresholds used to be the same value
 - (typhosj) ChargeNOW and ChargeManager now switch each other off instead of both staying on with ChargeNOW silently taking precedence
 - (typhosj) ChargeNOW now ends by itself when the vehicle is unplugged, and, with "stop when the vehicle stops charging" configured, when the vehicle stops drawing power - it used to hold the charge release until the switch was pressed again
@@ -266,6 +272,18 @@ If you enjoyed this project – or are just feeling generous – consider buying
 - (typhosj) ChargeManager: a three-phase charge whose surplus no longer carries three phases but still carries one now switches down to one phase instead of being stopped - the shutdown delay ran out before the 3-minute down dwell, so the charge stopped and restarted on one phase instead
 - (typhosj) the info log now reports a phase switch when it is written to the charger; the phase count planned while the charger is held off is only logged at debug level, because it follows the surplus without a dwell and flipped back and forth for hours with a full vehicle connected
 - (typhosj) ChargeManager: new optional grid-import state - while the house draws power from the grid during a surplus charge, e.g. because the inverter or the home battery cannot deliver more, the charging current is lowered until the import stops and raised again slowly afterwards
+
+### 1.10.2 (2026-11-01)
+
+- (HombachC) added a migration guide from the go-e adapter (ioBroker.go-e) in English and German
+- (HombachC) fixed the RFID card energy (statistics.RFID<n>.chargedEnergy) on gen 3+ chargers freezing at the value read at adapter start: it is now read from the API V2 card keys in Wh precision, with an API V1 fallback refreshed every cycle (#889)
+
+### 1.10.1 (2026-10-31)
+
+- (HombachC) an unreachable charger (e.g. without power) is now shown offline: its info.connection turns false, live readings are cleared and it is left out of ChargeManager and current budget until it answers again; the error is logged once instead of every cycle
+- (HombachC) added read-only state info.ipAddress with the configured IP address of each charger
+- (HombachC) log messages now name a charger by its configured name (e.g. charger "WEST - Tesla" (192.168.11.181)) instead of its number; the number is only used when no name is configured
+- (typhosj) ChargeManager: new state `Settings.PhaseMode` switches between fixed one-phase, fixed three-phase and automatic phase switching at runtime; the instance option now only makes the automatic mode available
 
 ### 1.10.0 (2026-10-29)
 
@@ -292,33 +310,6 @@ If you enjoyed this project – or are just feeling generous – consider buying
 
 - (typhosj) after an automatic switch from one to three phases the ChargeManager now continues at the power the car was charging with instead of the one-phase current; 16 A on one phase used to become 16 A on three phases (about 11 kW) and came down only one ampere per cycle, drawing the difference from the battery or the grid
 - (typhosj) after an automatic switch from three to one phase the ChargeManager now also continues at the power reached so far, capped at what the surplus carries on one phase; it used to keep the three-phase current, so a car plugged in while the charger still held three phases from the last charge took about a minute longer to start
-
-### 1.8.0 (2026-10-04)
-
-- (hombach) added an installation-wide total current budget (maximum total charging current) that caps the summed current of all wallboxes to protect a shared fuse, serving ChargeNOW before ChargeManager and keeping a wallbox without a connected vehicle off so idle wallboxes neither trip the fuse nor starve one that is already charging
-- (hombach) the total current budget now follows the measured charging current: a wallbox that draws less than allowed has its unused current reclaimed after a dwell and handed to the next wallbox, growing back one ampere per cycle when it uses what it gets - reductions are always applied before increases so the summed current never exceeds the fuse
-- (hombach) added concise debug logging for the ChargeManager control loops (surplus sharing, phase switching, total current budget)
-- (hombach) docs: documented the total current budget
-- (typhosj) the phase mode (`psm`) is now only written when the charger reports a different mode instead of every cycle, because it is a stored charger setting
-- (typhosj) ChargeManager: no charge release, charging current or phase switch is sent while no vehicle is plugged in, and an unchanged release or current is no longer re-sent every cycle - each write woke the charger's LEDs
-- (typhosj) the charging current is no longer re-sent every cycle: the charger reports a written `amx` back as 0 and only shows the applied current in `amp`, so the check for an unchanged value never matched
-- (typhosj) the charge release is no longer re-sent on every single cycle while the vehicle reports that it has finished charging - the charger confirms each write and keeps ignoring it, for up to 90 minutes in one logged case; it is still retried, just at a lower rate after the first five minutes
-- (typhosj) ChargeManager: the charging current no longer follows a one-ampere change of its target, so a passing cloud no longer makes it step back and forth every cycle
-- (typhosj) ChargeManager: a running charge now follows a falling surplus down to the minimum current - the 10 A start current also applied to a running charge, so currents between the minimum and 10 A were never written and the charger stayed at the 10 A written last, drawing the difference from the grid or the home battery until the surplus recovered or the shutdown delay ran out
-- (hombach) updated dependencies
-
-### 1.7.0 (2026-09-18)
-
-- (typhosj) admin: the wallbox list now explains that its order is the ChargeManager priority - the first entry receives the PV surplus first, later entries only the remainder
-- (typhosj) ChargeManager: the PV surplus is now shared between all wallboxes instead of being offered to each one in full; wallboxes are served in configuration order, so the first entry has priority and later ones only receive the remaining surplus
-- (typhosj) ChargeManager: a wallbox without a connected vehicle no longer reserves surplus and can no longer starve a wallbox that has a car waiting
-- (hombach) ChargeManager: optional automatic 1-/3-phase switching per wallbox (gen 3+, off by default) - switches up when one-phase charging saturates and back down when the surplus can no longer sustain three phases, with a dwell time to prevent flapping
-- (hombach) fixed: automatic phase switching no longer overwrites the manual `Settings.Charge3Phase` request - the automatic decision is now tracked internally, so the user's manual 1-/3-phase setting is preserved (and no longer persisted across restarts as if the user had set it)
-- (hombach) docs: clarified the multi-wallbox behaviour (list order = priority) and noted that no combined current limit across wallboxes is enforced yet
-- (hombach) updated axios
-- (hombach) switch to iobroker testing 6.x
-- (hombach) fixed repochecker warnings
-- (hombach) added node 26 tests
 
 [Older changelogs can be found there](CHANGELOG_OLD.md)
 

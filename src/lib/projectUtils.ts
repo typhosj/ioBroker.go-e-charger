@@ -34,6 +34,10 @@ export interface IWallboxInfo {
 	 */
 	HardwareMin3: boolean;
 	/**
+	 * The last API V2 read delivered RFID card data (`cards` or `c<i>n/e/i`), so the API V1 RFID keys are not needed
+	 */
+	RfidFromV2: boolean;
+	/**
 	 * GridPhases
 	 */
 	GridPhases: number;
