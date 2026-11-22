@@ -17,6 +17,7 @@ import {
 	phaseSwitchDwellCycles,
 	phaseSwitchStartsWait,
 	planningPhases,
+	phasesInUse,
 	releaseReadback,
 	calculateOptimalChargeCurrent,
 	type ChargeNowEndInput,
@@ -1497,10 +1498,17 @@ describe("ChargeManager safety helpers", () => {
 			assert.deepEqual(plan.decisions, decideChargeManagerFleet(shared, [zoe]));
 		});
 
-		it("does not switch on an unknown phase count", () => {
+		it("picks the start phase on an unknown phase count (psm 0) and sizes the current for it", () => {
+			// allocated with the grid phases: three phases give 4 A, the one phase it starts with 14 A
 			const plan = planChargeManagerFleet(shared, [zoe], [{ currentPhases: 0, switchDelay: PHASE_SWITCH_DELAY_CYCLES }]);
-			assert.deepEqual(plan.phases[0], { targetPhases: 0, switchDelay: 0 });
-			assert.deepEqual(plan.decisions, decideChargeManagerFleet(shared, [zoe]));
+			assert.deepEqual(plan.phases[0], { targetPhases: 1, switchDelay: 0 });
+			assert.equal(plan.decisions[0].optimalCurrent, 14);
+
+			// enough for three phases: no dwell, and the current already belongs to the grid phases
+			const fullSun = { ...shared, solarPower: 7200 };
+			const sunny = planChargeManagerFleet(fullSun, [zoe], [{ currentPhases: 0, switchDelay: 0, upDelayCycles: 9 }]);
+			assert.deepEqual(sunny.phases[0], { targetPhases: 3, switchDelay: 0 });
+			assert.deepEqual(sunny.decisions, decideChargeManagerFleet(fullSun, [zoe]));
 		});
 
 		describe("before the charge has started", () => {
@@ -1653,6 +1661,44 @@ describe("ChargeManager safety helpers", () => {
 			maximumChargeCurrent: 32,
 			switchDelay: 0,
 			...overrides,
+		});
+
+		it("picks the start phase from the surplus without a dwell when the phase count is unknown (psm 0)", () => {
+			const unknown = (availablePower: number, overrides: Partial<Parameters<typeof decidePhaseSwitch>[0]> = {}): ReturnType<typeof decidePhaseSwitch> =>
+				decidePhaseSwitch(input({ currentPhases: 0, availablePower, upDelayCycles: 9, downDelayCycles: 18, ...overrides }));
+			// the up threshold of a running one-phase charge: one phase at the maximum is not enough
+			assert.deepEqual(unknown(onePhaseMaxPower - 1), { targetPhases: 1, switchDelay: 0 });
+			assert.deepEqual(unknown(onePhaseMaxPower), { targetPhases: 3, switchDelay: 0 });
+			assert.deepEqual(unknown(0), { targetPhases: 1, switchDelay: 0 });
+			// no own switch to wait for: so far the charger switched by itself
+			assert.deepEqual(unknown(onePhaseMaxPower, { blocked: true }), { targetPhases: 3, switchDelay: 0 });
+			// before the start the floor is the start current, as for a known phase count
+			const fromOnePhase = decidePhaseSwitch(input({ currentPhases: 1, availablePower: onePhaseMaxPower, waitingForStart: true, upDelayCycles: 0 }));
+			assert.equal(unknown(onePhaseMaxPower, { waitingForStart: true }).targetPhases, fromOnePhase.targetPhases);
+		});
+
+		it("keeps an unknown phase count when the surplus or the current limits are not usable", () => {
+			for (const overrides of [
+				{ availablePower: Number.NaN },
+				{ minimumChargeCurrent: Number.NaN },
+				{ maximumChargeCurrent: Number.POSITIVE_INFINITY },
+			]) {
+				assert.deepEqual(
+					decidePhaseSwitch(input({ currentPhases: 0, availablePower: 20000, ...overrides })),
+					{ targetPhases: 0, switchDelay: 0 },
+					JSON.stringify(overrides),
+				);
+			}
+		});
+
+		it("does not switch from a phase count other than 0, 1 or 3", () => {
+			for (const currentPhases of [2, -1, Number.NaN]) {
+				assert.deepEqual(
+					decidePhaseSwitch(input({ currentPhases, availablePower: 20000 })),
+					{ targetPhases: currentPhases, switchDelay: 0 },
+					String(currentPhases),
+				);
+			}
 		});
 
 		it("stays in the hysteresis band without switching", () => {
@@ -2172,6 +2218,31 @@ describe("ChargeManager safety helpers", () => {
 		it("falls back to the reported phase count without a usable pending switch", () => {
 			for (const pending of [null, 0, 2, 4, -1, Number.NaN]) {
 				assert.equal(planningPhases(pending, 3), 3, String(pending));
+			}
+		});
+	});
+
+	describe("phasesInUse", () => {
+		it("takes the fixed phase mode the charger reports", () => {
+			assert.equal(phasesInUse(1, 1, 3), 1);
+			assert.equal(phasesInUse(3, 2, 1), 3);
+		});
+
+		it("takes the phases in use while the charger switches the phases itself (psm 0)", () => {
+			assert.equal(phasesInUse(0, 0, 1), 1);
+			assert.equal(phasesInUse(0, 0, 3), 3);
+		});
+
+		it("reports 0 (unknown) without a fixed mode and without a usable phase count in use", () => {
+			// psm 0 with the contactor open, two phases in use, garbage, or no psm read yet
+			for (const [enabled, psm, active] of [
+				[0, 0, 0],
+				[0, 0, 2],
+				[0, 0, -1],
+				[0, 0, Number.NaN],
+				[0, Number.NaN, 3],
+			]) {
+				assert.equal(phasesInUse(enabled, psm, active), 0, `${enabled}/${psm}/${active}`);
 			}
 		});
 	});
