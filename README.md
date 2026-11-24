@@ -53,8 +53,10 @@ Tested with firmware V033, V040.0, V041.0, V054.7, V054.11, V055.5, V055.7, V055
 
 ### Requirements
 
-- For hardware generation 3 and 4 you have to enable "HTTP API v1" in your go-e app.
+- For hardware generation 3 and 4 (e.g. HOME+, HOMEfix, Gemini) you have to enable "HTTP API v1" in your go-e app.
 - For phase switching you additionally have to enable "HTTP API v2" in your go-e app (hardware generation 3 and newer).
+- Chargers without HTTP API v1 (e.g. go-e Charger CORE / PRO with firmware 60.x) are detected automatically and read and controlled over "HTTP API v2" only, which has to be enabled in the go-e app. On these chargers the adapter gives and withdraws the charge release with the force state (`frc` on / off) and sets the charging current with `amp`. Password protection (authentication) of the local HTTP API is not supported yet; how the charger behaves with it (`hsa`) is not documented by go-e and unverified (a go-e CORE with firmware 60.4 answers local reads with `hsa` enabled, and its app offers no password setting).
+- A charger that requires RFID/app authorization ignores the charge release (force state) until it is authorized - the adapter logs this once. For chargers used over HTTP API v2 only, the option "Start transaction without RFID on API-v2-only chargers (trx=0)" in the charger settings starts a transaction without card before each release while a vehicle is plugged in. It is off by default, because it bypasses the RFID/app access protection of the charger.
 
 ## Configuration
 
@@ -68,8 +70,8 @@ The poll cycle time defines how often the adapter reads data from the chargers a
 
 Each wallbox can optionally be given its own **minimum** and **maximum charging current** [A]. These apply to **both** ChargeManager (PV surplus) and ChargeNOW, for example to throttle a single charger or to balance the load between several boxes on a shared supply.
 
-- A value of `0` means "not set": the minimum falls back to the technical minimum of 6 A, and the maximum falls back to the installation-wide maximum charging current from the standard settings.
-- A per-box maximum can only lower a charger below the installation limit, never raise it above.
+- A value of `0` means "not set": the minimum falls back to the technical minimum of 6 A, and the maximum falls back to the **maximum charging current per wallbox** from the standard settings.
+- A per-box maximum can only lower a charger below that default, never raise it above.
 - If the configured minimum ends up higher than the maximum, the minimum is clamped down to the maximum and a warning is logged.
 
 The adapter also reads the current caps reported by each charger – the absolute maximum current, the cable current limit and (via API v2) the minimum charging current – and folds them into the effective limits, so a charger is never driven beyond what its hardware or the plugged cable allows. The detected caps are published as `Wallbox_X.info.hardwareMaxChargeCurrent` and `Wallbox_X.info.hardwareMinChargeCurrent` to help you choose sensible per-box values.
@@ -78,11 +80,18 @@ The adapter also reads the current caps reported by each charger – the absolut
 
 ChargeManager calculates the charging current from numeric ioBroker states supplied by an energy-management, inverter, meter, or user-created data source. It does not depend on a particular vendor, but the selected states must represent the quantities described below.
 
-Configure the object IDs of the following states:
+The ChargeManager configuration page is organized in three blocks that follow the flow of the calculation. Options sit directly next to the object they belong to, fields that do not apply to the current selection are hidden, and every value field shows its unit:
 
-- currently available solar power [W]
-- current home power consumption [W]
-- current grid import [W] (optional, see _Supply limit from the grid import_ below)
+| Block               | Settings                                                                                                                                                                                                                                                         |
+| ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Surplus input**   | **Surplus source**; for _PV generation and house consumption_: solar power and home power consumption objects, each with its Negate option, and _Charger consumption is included_; for _Grid meter_: grid power object with Negate, Ack-only and maximum age [s] |
+| **Home battery**    | **Home battery mode**; unless _Disabled_: SoC object, SoC hysteresis [%] and maximum SoC age [s]; in _Battery priority_ also the maximum battery bonus [W]                                                                                                       |
+| **Surplus control** | Grid reserve power [W] and minimum ChargeManager current [A]                                                                                                                                                                                                     |
+
+Select the **Surplus source** in the first block and configure the object IDs of the following states:
+
+- _PV generation and house consumption_ (default): currently available solar power [W] and current home power consumption [W]
+- _Grid meter (signed import/export)_: current grid power [W], see [Grid meter input](#grid-meter-input) below
 - current state of charge of your home battery [%] (only required in the battery-aware modes, see _Home battery mode_ below)
 
 #### Input requirements
@@ -93,7 +102,7 @@ Configure the object IDs of the following states:
 | Home power consumption       | Total current household demand | W    | Positive consumption |
 | Home battery state of charge | Current battery charge level   | %    | 0 to 100             |
 
-All configured states must contain numeric values. Power values in kW must be converted to W before they are selected. A grid import/export state cannot replace these values, because ChargeManager expects separate generation and consumption values; it is only used for the optional supply limit described below.
+All configured states must contain numeric values. Power values in kW must be converted to W before they are selected. If a source reports PV generation or household consumption with the opposite sign, enable **Negate solar power** or **Negate home power consumption** next to the object (default off). If only a single grid import/export value is available, use the grid meter input instead of the two values above.
 
 If no home battery is installed, set the **Home battery mode** to _Disabled_ (see below). No battery state of charge has to be configured, and ChargeManager charges purely from the available PV surplus. The former helper-state workaround (a constant state set to `Settings.Setpoint_HomeBatSoC`) is no longer needed.
 
@@ -103,13 +112,29 @@ Enable **Charger consumption is included in the home power consumption value** w
 
 Leave the option disabled when the selected state already excludes wallbox consumption.
 
+#### Grid meter input
+
+Many installations only provide one signed value at the grid connection point (smart meter, Shelly 3EM, inverter `P_Grid`, …). Set **Surplus source** to _Grid meter (signed import/export)_ and select this state as **grid power** [W]:
+
+| Grid power | Meaning                        |
+| ---------- | ------------------------------ |
+| positive   | import (drawing from the grid) |
+| negative   | export (feeding into the grid) |
+
+This is the same convention as the go-e API v2 (`pGrid < 0` = feeding the grid). The PV generation and home power consumption objects are then not used, even if they are still filled in.
+
+- **Negate grid power** – inverts the sign for sources that report export as positive and import as negative (e.g. a Fronius `P_Grid` that was used with "Negate" in the old go-e adapter).
+- **Only use acknowledged values (ack=true)** – ignores updates written with `ack=false` (e.g. commands from scripts); the last acknowledged value stays in use.
+- **Maximum grid power age** [s] (default 0 = off) – surplus charging stops when the grid power has not been updated within this time, so a dead meter cannot keep the car charging from the grid.
+
+The grid value always contains the power of the wallboxes, so ChargeManager always adds the measured wallbox power back (the option _Charger consumption is included_ is not used in this mode). A missing, non-numeric or too old grid value stops surplus charging, just like an invalid PV or consumption value. The adapter subscribes to the grid power state and uses its latest accepted value in every cycle.
 #### Supply limit from the grid import
 
 Some installations cannot deliver the calculated surplus: a hybrid inverter caps its output (PV and home battery both run through it), the home battery has a maximum discharge power, or it is empty. The surplus formula does not see these limits, so the difference is drawn from the grid.
 
-If **Object ID for the current grid import** is set, ChargeManager watches it. When the grid import stays above 150 W for two minutes while a ChargeManager wallbox is charging, it takes the house load the installation delivered without the grid (home power consumption minus grid import) as a supply limit. The wallboxes then get at most this limit minus the rest of the house load and the grid reserve, and the current follows a one-ampere drop at once. The two minutes let a hybrid inverter follow a load step first; turning its battery from charging to discharging can take close to a minute. An existing limit is lowered after two poll cycles. Without grid import the limit rises by 250 W per minute, so a rising PV output is used again; while the bottleneck persists, each step up costs a short grid import of one ampere before the limit is learned again. The limit is dropped once it no longer caps the maximum current, when no wallbox runs under ChargeManager, and when the adapter restarts.
+If the surplus source is _PV generation and house consumption_ and **Object ID of the grid power** is set, ChargeManager watches it for this limit (with **Negate grid power** applied). When the grid import stays above 150 W for two minutes while a ChargeManager wallbox is charging, it takes the house load the installation delivered without the grid (home power consumption minus grid import) as a supply limit. The wallboxes then get at most this limit minus the rest of the house load and the grid reserve, and the current follows a one-ampere drop at once. The two minutes let a hybrid inverter follow a load step first; turning its battery from charging to discharging can take close to a minute. An existing limit is lowered after two poll cycles. Without grid import the limit rises by 250 W per minute, so a rising PV output is used again; while the bottleneck persists, each step up costs a short grid import of one ampere before the limit is learned again. The limit is dropped once it no longer caps the maximum current, when no wallbox runs under ChargeManager, and when the adapter restarts.
 
-The state must contain the grid import in W with import positive; export may be 0 or negative. Leave the field empty to switch the supply limit off. ChargeNOW is not affected and may still draw from the grid.
+The state must contain the grid power in W with import positive and export negative. Leave the field empty to switch the supply limit off. In the _Grid meter_ mode the limit is not used, because a grid import already lowers the surplus there. ChargeNOW is not affected and may still draw from the grid.
 
 #### Calculation
 
@@ -120,6 +145,13 @@ available power =
     solar power
   - home power consumption
   + wallbox power, if it is included in home power consumption
+  - grid reserve
+  + battery bonus (Battery priority mode only)
+
+grid meter input:
+available power =
+  - grid power (import positive, export negative)
+  + wallbox power
   - grid reserve
   + battery bonus (Battery priority mode only)
 
@@ -138,9 +170,9 @@ Six settings on the ChargeManager configuration page tune this calculation:
 - **Maximum battery bonus** [W] (default 2000) – how much extra power, on top of the pure solar surplus, may be drawn while the home battery is above its minimum state of charge. The bonus is `0` when the battery is exactly at the minimum SoC and grows linearly to this maximum as the battery approaches 100 %, so a fuller battery lets the car charge faster. Set it to `0` to charge purely from the measured solar surplus without ever discharging the home battery into the car.
 - **Minimum ChargeManager current** [A] (default 6) – the surplus charging current below which the charger is switched off after a short delay. This applies to PV surplus charging only.
 
-The **maximum charging current** [A] (default 16, up to 32) is configured on the **standard settings page**, not here: it is an installation-wide limit of the shared power supply (main breaker / circuit protection) rather than a ChargeManager tuning value. It caps the current the adapter will ever assign to **any** wallbox, in **both** ChargeManager (PV surplus) **and** ChargeNOW.
+The **maximum charging current per wallbox** [A] (default 16, up to 32) is configured on the **standard settings page**, not here: it is the upper limit and default for each individual wallbox rather than a ChargeManager tuning value. It caps the current the adapter will ever assign to **a single** wallbox, in **both** ChargeManager (PV surplus) **and** ChargeNOW. A tighter limit can be set per box in the wallbox list; the summed current of all wallboxes is limited separately by the **maximum total charging current**.
 
-> **⚠️ Do not set the maximum charging current higher than your go-e Charger hardware and your electrical installation support.** go-e Charger models are rated for different maximum currents (e.g. 16 A or 32 A), and the actual limit also depends on your cable, plug and wiring. Setting a value above the hardware/installation rating can trip protection devices or damage equipment. When in doubt, keep the default of 16 A.
+> **⚠️ Do not set the maximum charging current per wallbox higher than your go-e Charger hardware and the circuit feeding that wallbox support.** go-e Charger models are rated for different maximum currents (e.g. 16 A or 32 A), and the actual limit also depends on your cable, plug and wiring. Setting a value above the hardware or circuit rating can trip protection devices or damage equipment. When in doubt, keep the default of 16 A.
 
 In the battery-aware modes, EV charging is disabled below `Settings.Setpoint_HomeBatSoC` so that the home battery has priority. Charging starts once the internal target reaches 10 A (or the minimum current if it is set higher); a running charge then follows the target down to the minimum current. The calculated current is limited to the configured maximum, and the internal current target changes by at most 1 A per poll cycle to reduce sudden changes.
 
@@ -184,9 +216,11 @@ Because the current implementation starts charging when its internal target exce
 
 Enable **automatic 1-/3-phase switching** per wallbox (gen 3+ only, off by default) to let ChargeManager pick the phase mode from the available surplus:
 
-- It switches **up to three phases** once one-phase charging is saturated (the surplus exceeds the one-phase maximum), giving access to the higher three-phase ceiling.
-- It switches **down to one phase** once the surplus can no longer sustain the three-phase minimum (~4.1 kW at 6 A), so a shrinking surplus keeps charging one-phase instead of stopping.
-- The gap between those thresholds plus a dwell time prevents rapid back-and-forth switching, which would interrupt charging each time.
+- It switches **up to three phases** once the surplus exceeds both the one-phase maximum and 1.25 times the three-phase minimum (5175 W with 6-16 A), so three-phase charging starts with headroom above its own floor instead of right on it.
+- It switches **down to one phase** once the surplus drops below the three-phase minimum (4140 W at 6 A) but still carries one-phase charging at the minimum (1380 W at 6 A). Below that, one phase would not charge either, so the charge stops instead of switching.
+- More surplus must hold for 1 minute before switching up, less surplus for 3 minutes before switching down. A three-phase charge that would otherwise be stopped for too little surplus switches down at once. No switch follows before the charger's own minimum time between two switches (`mptwt`, 10 minutes by default) has passed: every switch costs the charger a pause, and some firmware versions hang in that pause.
+- The phase count is only written to the charger while the charge release is active (force state "on"). While the charger is held off, the phase count for the next start is only planned: it follows the surplus at once without a dwell, uses the start current (10 A) instead of the minimum, sizes the charging current right away and is written right after the next charge release. The same applies to a fixed phase mode and to ChargeNOW.
+- A charger set to its own automatic phase switching (`psm` 0) is taken over from the phases it charges on; while it does not charge, the start phase is picked from the surplus right away.
 
 The option makes automatic switching available; `Settings.PhaseMode` selects it at runtime without restarting the adapter:
 
@@ -228,9 +262,9 @@ When ChargeManager runs several wallboxes at once, the PV surplus is shared betw
 
 To protect a shared fuse or supply line feeding several wallboxes, set the **maximum total charging current** [A] on the standard settings page. It is an installation-wide budget: the summed charging current of **all** wallboxes never exceeds it, in **both** ChargeManager and ChargeNOW. Unlike the PV surplus (which is measured in watts), the fuse is protected in **amperes**, because a feed rated for e.g. 20 A carries 20 A regardless of whether a wallbox charges one- or three-phase.
 
-The budget is allocated in priority order: ChargeNOW wallboxes first, then ChargeManager wallboxes in wallbox-list order. A wallbox that no longer fits is throttled to the remaining current, or switched off when even its minimum would not fit. While the budget is active, a wallbox without a connected vehicle is kept off and reserves nothing, so several idle wallboxes plugged in at the same time can never exceed the fuse before the next cycle re-plans, and an idle wallbox never starves one that is already charging.
+The budget is allocated in priority order: ChargeNOW wallboxes first, then ChargeManager wallboxes in wallbox-list order. A wallbox that no longer fits is throttled to the remaining current, or switched off when even its minimum would not fit. While the budget is active, a wallbox without a connected vehicle is kept off and reserves nothing (a vehicle counts as connected in the go-e car states charging, waiting for the car and charge finished), so several idle wallboxes plugged in at the same time can never exceed the fuse before the next cycle re-plans, and an idle wallbox never starves one that is already charging.
 
-A value of `0` (default) disables the budget; the adapter then does not enforce a combined limit, so make sure the sum of the per-wallbox maximum currents stays within your installation's capacity.
+A value of `0` disables the budget (an active budget needs at least 6 A; new instances start with 16 A); the adapter then does not enforce a combined limit, so make sure the sum of the per-wallbox maximum currents stays within your installation's capacity.
 
 While the budget is active, the adapter also **follows the actually measured charging current**: if a wallbox draws noticeably less than it is allowed (e.g. a vehicle with a lower onboard-charger limit, a car tapering near full, or temperature derating), its unused current is reclaimed after a few cycles and handed to the next wallbox in priority order. The wallbox keeps a small headroom above its real draw and is offered one ampere more each cycle as long as it uses what it gets, so it can grow back to its limit. To stay safe, a wallbox is only ever throttled _down_ to reclaim capacity — its command is never left high while the freed amperes are given away — so the summed current can never exceed the fuse even if a vehicle suddenly ramps back up.
 
@@ -256,6 +290,24 @@ If you enjoyed this project – or are just feeling generous – consider buying
 -->
 ### **WORK IN PROGRESS**
 
+### 1.12.0 (2026-11-23)
+
+- (typhosj) ChargeManager: the automatic 1-/3-phase switching now keeps a real gap between switching up and switching back down - for a 16 A wallbox both thresholds used to be the same value
+- (typhosj) ChargeManager: the automatic phase switching no longer switches down to one phase when the surplus would not be enough for one-phase charging either, waits 1 minute before switching up and 3 minutes before switching down, and never switches again before the charger's own minimum time between two switches has passed - every switch costs the charger a pause, and on some firmware versions it hangs in that pause
+- (typhosj) ChargeManager: a three-phase charge whose surplus no longer carries three phases but still carries one now switches down to one phase instead of being stopped - the shutdown delay ran out before the 3-minute down dwell, so the charge stopped and restarted on one phase instead
+- (typhosj) the phase count is no longer switched while the charger is held off - neither by the automatic switching, nor by a fixed phase mode, nor by ChargeNOW. The new phase count is planned at once without the switching dwell, sizes the charging current right away and is written right after the next charge release. A switch without a release is never needed, starts the charger's minimum time between two switches, which can then block the switch the start needs, and left the go-e hanging in "min pause duration" for hours on some firmware versions. The info log reports a phase switch when it is written to the charger, the plan only at debug level
+- (typhosj) ChargeManager: before a charge starts, the automatic phase switching now plans with the start current (10 A) instead of the minimum current - a surplus between the three-phase minimum and the three-phase start (5520 to 6900 W with 8-16 A) kept the charger on three phases, where it never started, although one phase could have charged at full current
+- (typhosj) ChargeManager: a charger set to its own automatic phase switching (`psm` 0) now starts the automatic phase switching from the phases it charges on, or - while it does not charge - picks the start phase from the surplus right away; it used to be switched to one phase first, and the charger's minimum time between two switches then kept a sunny start on one phase for ten minutes
+- (HombachC) fixed ChargeNOW and ChargeManager never starting with the total current budget (`maxAmpTotal`) active when the charger reported car state 4 (charge finished / paused): the budget took only car states 2 and 3 as a connected vehicle, withdrew the release and logged "waiting for vehicle", and without a release the charger stays at car state 4; car state 4 now counts as a connected vehicle, as everywhere else in the adapter
+- (HombachC) the maximum total charging current across all wallboxes accepts 0 (budget disabled) again in the admin page, as its label and help say; values 1-5 A are refused; it is placed next to the maximum charging current per wallbox
+- (HombachC) clarified the labels and help texts of the maximum charging current per wallbox (`maxChargeCurrent`): it is the upper limit and default for each individual wallbox, not the installation fuse; a tighter per-box limit is set in the wallbox list, and the summed current is limited by the maximum total charging current
+
+### 1.11.0 (2026-11-22)
+
+- (HombachC) added grid meter input for ChargeManager: one signed grid power value (import positive, export negative) instead of PV generation and house consumption, with Negate, Ack-only and maximum age options (#919)
+- (HombachC) added Negate options for the solar power and home power consumption objects (#919)
+- (HombachC) reorganized the ChargeManager configuration page into the logical blocks surplus input, home battery and surplus control: options are placed next to the object they belong to, settings that do not apply to the selected surplus source or home battery mode are hidden, and all value fields show their unit (#919)
+- (HombachC) added support for chargers without HTTP API v1 (e.g. go-e Charger CORE / PRO, firmware 60.x): they are detected automatically and read and controlled over HTTP API v2 only; HTTP error answers (e.g. 404 for a disabled API, 401/403 for probable password protection) are now logged with a hint instead of asking to verify the IP address; a charger waiting for RFID/app authorization is logged once, and the new charger option "Start transaction without RFID on API-v2-only chargers (trx=0)" (off by default) can authorize it; rejections of API v2 writes are logged with the charger's reason; car states "Initializing" and "Unknown" are no longer shown as "Error"; these chargers are no longer asked for `ast`, `cbl` and `cards` (the go-e CORE 60.4 has none of them, and unknown keys are ignored); the cause of an HTTP 400 on a go-e CORE 60.4 is unknown, and as a safety net a charger that refuses the filtered status with HTTP 400 is read without filter; every HTTP request to a charger is logged at debug level with URL, HTTP status, duration and response length (#939)
 - (HombachC) a charger set to its own automatic phase switching (`psm` 0) is still switched to the fixed phase mode of the adapter on purpose - this is now logged once; `Power.EnabledPhases` shows the phases in use instead of 0 while the charger is set to automatic phase switching
 - (HombachC) moved the Sentry notice near the top of README.md to satisfy the repository checker (#938)
 - (hombach) updated iobroker/testing
@@ -300,20 +352,6 @@ If you enjoyed this project – or are just feeling generous – consider buying
 - (typhosj) a ChargeManager that takes over a charger - at adapter start or after ChargeNOW - continues a running charge at its current, with a fresh shutdown delay; it used to start from its previous state and could withdraw the release in its first cycle
 - (typhosj) ChargeManager: a charger in force state neutral, where it decides by itself and charges any vehicle, is now held off unless the adapter released it - firmware 60.6 comes back from every restart in that state, the go-e app sets it when a setting is saved, and firmware 59.4 and 60.6 set it when a vehicle is unplugged; the next vehicle used to charge at full power from the grid until the shutdown delay ran out. The release the charger reports in that state is no longer taken for one the adapter gave
 - (HombachC) fixed TypeError in log when a state change arrives for an unconfigured wallbox number
-
-### 1.9.0 (2026-10-28)
-
-- (solar0x) new states `Wallbox_X.Power.VoltageL1`, `VoltageL2` and `VoltageL3` show the voltage the charger measures on each grid phase, in V; all hardware generations. As in the go-e app, a single-phase supply with L and N swapped shows its N voltage as L1
-- (typhosj) new state `Wallbox_X.Power.GridFrequency` shows the grid frequency the charger measures, in Hz; hardware gen 3 and newer with HTTP API v2 enabled only, and it stays empty while the charger reports the frequency as unknown [#898]
-- (typhosj) new state `Wallbox_X.info.chargeState` explains why the charger is charging or not - waiting for a vehicle, charging the home battery first, not enough PV surplus, ramping up to the start current, charging, current budget exhausted, both modes off; every change of the reason is also logged once. A charger that never started used to leave no trace in the log, because most of these reasons were only logged together with a write to the charger
-- (typhosj) ChargeManager: new per-wallbox option to withdraw the charge release when the vehicle draws no power for 5 minutes - vehicles such as the Renault Zoe otherwise stay in charging mode, e.g. in the evening when the battery bonus keeps the release active (reported by a user)
-- (hombach) phase voltages and grid frequency are rounded to 2 decimal places
-- (hombach) updated dependencies
-
-### 1.8.1 (2026-10-11)
-
-- (typhosj) after an automatic switch from one to three phases the ChargeManager now continues at the power the car was charging with instead of the one-phase current; 16 A on one phase used to become 16 A on three phases (about 11 kW) and came down only one ampere per cycle, drawing the difference from the battery or the grid
-- (typhosj) after an automatic switch from three to one phase the ChargeManager now also continues at the power reached so far, capped at what the surplus carries on one phase; it used to keep the three-phase current, so a car plugged in while the charger still held three phases from the last charge took about a minute longer to start
 
 [Older changelogs can be found there](CHANGELOG_OLD.md)
 

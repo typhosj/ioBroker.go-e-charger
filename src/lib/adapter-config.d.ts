@@ -8,8 +8,14 @@ declare global {
 			stateHomeBatSoc: string;
 			stateHomeSolarPower: string;
 			stateHomePowerConsumption: string;
-			stateHomeGridImport?: string;
+			solarPowerNegate: boolean;
+			homePowerConsumptionNegate: boolean;
 			subtractSelfConsumption: boolean;
+			gridMode: "pvAndConsumption" | "gridMeter";
+			stateGridPower: string;
+			gridPowerNegate: boolean;
+			gridPowerAckOnly: boolean;
+			gridPowerMaxAgeSeconds: number;
 			chargeManagerReservePower: number;
 			chargeManagerMaxBatteryBonus: number;
 			chargeManagerMinCurrent: number;
@@ -27,6 +33,7 @@ declare global {
 					minAmp: number;
 					autoPhaseSwitch: boolean;
 					stopWhenCarIdle?: boolean;
+					startTransactionWithoutRfid?: boolean;
 				},
 			];
 		}
