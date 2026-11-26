@@ -290,6 +290,8 @@ If you enjoyed this project – or are just feeling generous – consider buying
 -->
 ### **WORK IN PROGRESS**
 
+- (typhosj) a charge release the adapter no longer requests is no longer counted as ignored: after the vehicle was unplugged, the charger reports the release as withdrawn by itself, the adapter wrote nothing and kept waiting for its last release - five minutes later the log said the release was ignored 30 times, and a later start at car state 4 could send the release only every 6 cycles from the first attempt on
+
 ### 1.12.0 (2026-11-23)
 
 - (typhosj) ChargeManager: the automatic 1-/3-phase switching now keeps a real gap between switching up and switching back down - for a 16 A wallbox both thresholds used to be the same value

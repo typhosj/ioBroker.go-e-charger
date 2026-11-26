@@ -25,6 +25,7 @@ import {
 	planningPhases,
 	phasesInUse,
 	releaseReadback,
+	requestedAllowAfter,
 	DEFAULT_MAXIMUM_BATTERY_BONUS,
 	DEFAULT_RESERVE_POWER,
 	effectiveCurrentDemand,
@@ -961,6 +962,10 @@ class go_e_charger extends utils.Adapter {
 					if (withdrawReleaseWithModesOff(await this.projectUtils.getStateValue(`Wallbox_${iWB}.Power.ChargingAllowed`), info.ReleasedByAdapter)) {
 						this.wallboxInfoList[iWB].SetAmp = 0;
 						await this.Charge_Config("0", this.wallboxInfoList[iWB].MinAmp, `Deactivate go-eCharger`, iWB);
+					} else {
+						// the adapter requests no release now - a release it wrote earlier is not ignored
+						this.wallboxInfoList[iWB].RequestedAllow = null;
+						this.wallboxInfoList[iWB].ReleaseRejects = 0;
 					}
 				}
 				totalChargeEnergy += Number(await this.projectUtils.getStateValue(`Wallbox_${iWB}.statistics.chargedEnergy`)) || 0; // accumulate total charged energy of all chargers
@@ -2100,6 +2105,8 @@ class go_e_charger extends utils.Adapter {
 		this.wallboxInfoList[iWB].ReleasedByAdapter = Allow === "1";
 
 		let pending = dropUnchangedChargerCommands(commands, this.wallboxInfoList[iWB].Reported);
+		// before the thinning out below: a release held back there is not met
+		this.wallboxInfoList[iWB].RequestedAllow = requestedAllowAfter(commands, this.wallboxInfoList[iWB].Reported, this.wallboxInfoList[iWB].RequestedAllow);
 		if (holdRejectedRelease(this.wallboxInfoList[iWB].ReleaseRejects, this.wallboxInfoList[iWB].CarState)) {
 			// the vehicle has finished and keeps ignoring the release - the retries continue at a
 			// lower rate, so this cycle sends nothing but a withdrawal, which is never held back
